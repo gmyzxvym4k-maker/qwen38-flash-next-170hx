@@ -28,6 +28,10 @@ else
   SUDO() { sudo -n "$@"; }
 fi
 
+# free 的输出标签随 locale 变（中文系统是「内存：/交换空间：」），按标签匹配会
+# 静默取到空值 —— 一律按行号取：1=表头 2=Mem 3=Swap。
+free_g(){ free -g | awk -v n="$1" 'NR==n{print $2+0}'; }
+
 PASS=0; FAIL=0; WARN=0
 ck(){ # ck <名称> <期望> <实测> [级别]
   local name=$1 exp=$2 got=$3 lvl=${4:-must}
@@ -58,8 +62,8 @@ ck "udev 规则 99-nvme-readahead" "存在" "$([ -f /etc/udev/rules.d/99-nvme-re
 ck "udev 规则 98-cmp-gen2-early" "存在" "$([ -f /etc/udev/rules.d/98-cmp-gen2-early.rules ] && echo 存在 || echo 缺失)"
 ck "gen2 早钩子可执行" "存在" "$([ -x /usr/local/sbin/gen2-early-launch ] && echo 存在 || echo 缺失)"
 ck "功耗服务已 enabled" "enabled" "$(systemctl is-enabled gpu-power-limit.service 2>/dev/null)" warn
-ck "总内存 GiB（≥128 才够 BF16 表；本方案 INT8 可 64）" "-" "$(free -g|awk '/^Mem:/{print $2}')"
-ck "swap（建议关，与 PLE 同盘会抢 I/O）" "0" "$(free -g|awk '/^Swap:/{print ($2==""?0:$2)}')" warn
+ck "总内存 GiB（≥128 才够 BF16 表；本方案 INT8 可 64）" "-" "$(free_g 2)"
+ck "swap GiB（建议关，与 PLE 同盘会抢 I/O）" "0" "$(free_g 3)" warn
 
 # ============ B. 镜像与补丁 ============
 sec "B. 镜像 rootfs 与 vLLM 补丁"
