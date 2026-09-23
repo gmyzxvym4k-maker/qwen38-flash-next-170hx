@@ -1,0 +1,19 @@
+# 当前实例（19:03 CST 启动 = 11:03 UTC，日志时间是 UTC，比对北京时间 +8）的启动画像
+# 取法：grep -aE 'FN-PLE|Loading weights took|Model loading took|Available KV|GPU KV cache size|init engine' <日志>
+(PleOffloadWorker pid=1745508) INFO 09-23 11:05:13 [worker.py:757] [FN-PLE-INT8] n-gram table attached from /media/ll/data/ple: rows=320001536 hidden=160 int8=47.68 GiB + bf16 row scales=0.596 GiB (an
+(Worker_PP0 pid=1743601) INFO 09-23 11:05:42 [default_loader.py:430] Loading weights took 77.97 seconds
+(Worker_PP1 pid=1744256) INFO 09-23 11:05:56 [model_runner.py:422] Model loading took 40.33 GiB memory and 102.069307 seconds
+(Worker_PP1 pid=1744256) INFO 09-23 11:05:56 [model_runner.py:369] [FN-PLE-PP] no PleOffloadLayer on this pipeline stage; PLE offload connector not created for this rank.
+(Worker_PP0 pid=1743601) INFO 09-23 11:06:04 [model_runner.py:422] Model loading took 39.57 GiB memory and 101.643261 seconds
+(Worker_PP0 pid=1743601) INFO 09-23 11:06:16 [encoder_runner.py:120] Encoder cache will be initialized with a budget of 16384 tokens, and profiled with 1 image items of the maximum feature size.
+(Worker_PP0 pid=1743601) INFO 09-23 11:06:26 [gpu_worker.py:694] Available KV cache memory: 18.16 GiB
+(EngineCore pid=1742810) INFO 09-23 11:06:26 [kv_cache_utils.py:2258] GPU KV cache size: 1,224,366 tokens, Maximum concurrency for 1,048,576 tokens per request: 1.17x
+(Worker_PP0 pid=1743601) INFO 09-23 11:06:26 [factory.py:57] Creating offloading spec with name: CPUOffloadingSpec
+(Worker_PP1 pid=1744256) INFO 09-23 11:06:26 [factory.py:57] Creating offloading spec with name: CPUOffloadingSpec
+(EngineCore pid=1742810) INFO 09-23 11:07:06 [core.py:347] init engine (profile, create kv cache, warmup model) took 60.99 s (compilation: 0.49 s)
+(EngineCore pid=1742810) INFO 09-23 11:07:08 [factory.py:57] Creating offloading spec with name: CPUOffloadingSpec
+INFO 09-23 11:07:21 [base.py:225] Multi-modal warmup skipped (VLLM_SKIP_MM_WARMUP=1)
+INFO 09-23 11:07:21 [base.py:225] Readonly multi-modal warmup skipped (VLLM_SKIP_MM_WARMUP=1)
+=== 就绪时间 ===
+INFO:     Application startup complete.
+INFO:     Application startup complete.

@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# 运行日志不入库，但 tools/ 下的启动画像快照是交付内容（docs/09 引用它）
 *.log
+!tools/*.log
 tools/*.raw
