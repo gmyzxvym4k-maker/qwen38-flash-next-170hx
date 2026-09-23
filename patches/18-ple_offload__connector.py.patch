@@ -1,0 +1,45 @@
+--- a/v1/ple_offload/connector.py
++++ b/v1/ple_offload/connector.py
+@@ -58,7 +58,6 @@
+         self.dp_rank = get_dp_group().rank_in_group
+         self.tp_rank = get_tp_group().rank_in_group
+         self._layers = self._setup_layers(vllm_config, model)
+-
+         # Both runner paths stage into the same shared buffers. TP0 registers
+         # them with CUDA so MRV2 can use asynchronous D2H copies.
+         scheduler_config = vllm_config.scheduler_config
+@@ -105,6 +104,17 @@
+         self._input_ready_event: torch.cuda.Event | None = None
+         self._d2h_done_event: torch.cuda.Event | None = None
+ 
++        if not self._layers:
++            # [FN-PLE-PP] All attributes above are initialised, but this
++            # pipeline stage owns no PLE layers. Do not connect, register
++            # or start the request thread: that would publish field-less
++            # messages to the shared CPU worker and crash it.
++            logger.info(
++                "[FN-PLE-PP] PLE offload connector is inert on this rank "
++                "(no PLE layers on this pipeline stage)."
++            )
++            return
++
+         try:
+             self._zmq_ctx = zmq.Context()
+             self._registration_socket = self._zmq_ctx.socket(zmq.PUSH)
+@@ -137,9 +147,14 @@
+             if isinstance(module, PleOffloadLayer)
+         }
+         if not layers:
+-            raise RuntimeError(
+-                "VLLM_PLE_CPU_OFFLOAD is enabled, but the model has no PleOffloadLayer"
++            # [FN-PLE-PP] With PP>1 the PLE layers live on whichever stage owns
++            # them, so a rank without any has nothing to offload. The CPU worker
++            # is global; ranks that do own PLE layers still drive it.
++            logger.info(
++                "[FN-PLE-PP] no PleOffloadLayer on this pipeline stage; "
++                "skipping PLE offload setup for this rank."
+             )
++            return {}
+ 
+         config = vllm_config.model_config.hf_text_config
+         max_num_tokens = vllm_config.scheduler_config.max_num_batched_tokens

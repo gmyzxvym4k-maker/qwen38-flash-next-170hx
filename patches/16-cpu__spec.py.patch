@@ -1,0 +1,31 @@
+--- a/v1/kv_offload/cpu/spec.py
++++ b/v1/kv_offload/cpu/spec.py
+@@ -40,6 +40,13 @@
+                     "dropped due to insufficient capacity."
+                 ),
+             ),
++            CPUOffloadingMetrics.CPU_CACHE_FILL_PERC: OffloadingGaugeMetadata(
++                documentation=(
++                    "[local-patch kvfill] Fraction of CPU offload blocks "
++                    "currently holding cached data (vs. free), regardless of "
++                    "in-flight transfers."
++                ),
++            ),
+             CPUOffloadingMetrics.CPU_CACHE_WRITE_USAGE_PERC: OffloadingGaugeMetadata(
+                 documentation=(
+                     "Fraction of CPU KV-cache space currently pinned by "
+@@ -144,6 +151,14 @@
+     def _uses_shared_region(self) -> bool:
+         """Whether the worker CPU buffer is the shared mmap region (vs a private
+         per-rank tensor); replicated-layout dedup is gated on this being True."""
++        # [local-patch kvoff-c2] Under PP>1 each rank covers a different layer
++        # subset, so its row stride differs; the shared-region protocol has the
++        # creator ftruncate to *its* size while joiners wait for *their*
++        # expected size -> timeout, and block slots would overlap anyway.
++        # Fall back to private per-rank pinned tensors (total pinned across
++        # ranks stays cpu_bytes_to_use, each rank only stores its own layers).
++        if self.config.parallel.pp_size > 1:
++            return False
+         return current_platform.is_cuda_alike()
+ 
+     def create_worker(self, kv_caches: CanonicalKVCaches) -> CPUOffloadingWorker:

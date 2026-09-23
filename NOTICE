@@ -1,0 +1,15 @@
+Qwen3.8-Flash-Next on 2× CMP 170HX — deployment patches, scripts and documentation
+Copyright 2026 the deployment author.
+
+This product includes software developed at the vLLM project
+(https://github.com/vllm-project/vllm), Apache License 2.0.
+The patches under ./patches modify vLLM sources that remain Apache License 2.0.
+
+The base container image (vllm/vllm-openai:qwen38-flash-next) and the model
+weights (Qwen3.8-Flash-Next-W4A16-AutoRound) are NOT redistributed by this
+repository; fetch them per docs/02-image-rootfs.md and docs/03-model.md and
+comply with their respective licenses.
+
+Measurements quoted in docs/ were taken on the author's own hardware
+(2× NVIDIA CMP 170HX 64GB, Xeon E5 v4). Reproducing them on other platforms
+is not guaranteed; see docs/07-performance.md for the platform-gap analysis.

@@ -1,0 +1,7 @@
+# 数据盘 JZ-SSD2T-XW_30166625132（/media/ll/data，模型/PLE 表所在盘）读预读 = 128 KB
+# 依据（2026-09-15 实测，2T 盘 2.70GB 分片、每轮 fadvise DONTNEED）：
+#   RA 0->297  128->3011  256->3113  512->3080  1024->3301  2048->3094  8192->3303 MB/s
+#   128KB 已到拐点；设 0 会让权重加载慢 10.9x（475s vs 43.7s），设 2048 无吞吐收益且读放大 16x
+# 必须按 ID_SERIAL 匹配：本机重启后 nvme 盘符会与系统盘互换，写死 nvmeXn1 会打到系统盘。
+# 编号必须 99-（60-persistent-storage.rules 才导入 ID_SERIAL，60- 之前匹配不到）。
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", ENV{ID_SERIAL}=="JZ-SSD2T-XW_30166625132", ATTR{queue/read_ahead_kb}="128"

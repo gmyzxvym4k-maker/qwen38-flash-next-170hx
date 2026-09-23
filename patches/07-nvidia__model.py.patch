@@ -1,0 +1,16 @@
+--- a/models/qwen3_8_flash_next/nvidia/model.py
++++ b/models/qwen3_8_flash_next/nvidia/model.py
+@@ -436,7 +436,12 @@
+                 prefix=maybe_prefix(prefix, "hyper_connection_mixer"),
+             )
+         else:
+-            self.hyper_connection_mixer = None
++            # [FN-HCM-PP] Non-last ranks must still register the module so
++            # AutoWeightsLoader has a landing spot for the checkpoint's
++            # hyper_connection_mixer.* weights.
++            self.hyper_connection_mixer = StageMissingLayer(
++                "hyper_connection_mixer"
++            )
+ 
+         spec_config = vllm_config.speculative_config
+         # MTP HC multi-stream outputs: when speculative method=="mtp" and the

@@ -1,0 +1,37 @@
+--- a/envs.py
++++ b/envs.py
+@@ -292,6 +292,15 @@
+     VLLM_USE_V2_MODEL_RUNNER: bool | None = None
+     VLLM_PLE_CPU_OFFLOAD: bool = False
+     VLLM_PLE_OFFLOAD_READY_TIMEOUT: float = 600.0
++    # [FN-PLE-DISK] Serve the PLE n-gram table from a file mmap
++    # instead of anonymous CPU heap.
++    VLLM_PLE_DISK_RESIDENT: bool = False
++    # [FN-PLE-INT8] Directory with INT8 n-gram artifacts (quantize_ple.py);
++    # empty = off. Requires VLLM_PLE_DISK_RESIDENT + VLLM_PLE_CPU_OFFLOAD.
++    VLLM_PLE_INT8_DIR: str = ""
++    # [FN-PLE-INT8MEM] True = 把 INT8 产物读进匿名私有内存（owned buffer），
++    # 不走 mmap/页缓存；需 VLLM_PLE_DISK_RESIDENT + VLLM_PLE_INT8_DIR。
++    VLLM_PLE_INT8_MEMORY: bool = False
+     VLLM_LOG_MODEL_INSPECTION: bool = False
+     VLLM_DEBUG_MFU_METRICS: bool = False
+     VLLM_WEIGHT_OFFLOADING_DISABLE_PIN_MEMORY: bool = False
+@@ -2040,7 +2049,17 @@
+     "VLLM_PLE_OFFLOAD_READY_TIMEOUT": lambda: float(
+         os.getenv("VLLM_PLE_OFFLOAD_READY_TIMEOUT", "600")
+     ),
+-    # Log model inspection after loading.
++
++    # [FN-PLE-DISK] Opt-in disk-resident PLE n-gram table.
++    "VLLM_PLE_DISK_RESIDENT": lambda: (
++        os.getenv("VLLM_PLE_DISK_RESIDENT", "False").lower() in ("true", "1")
++    ),
++    # [FN-PLE-INT8] Directory holding ple_ngram_int8.bin / ple_ngram_scale.bin /
++    # ple_ngram_meta.json produced by /home/ll/deploy/ple-int8/quantize_ple.py.
++    "VLLM_PLE_INT8_DIR": lambda: os.getenv("VLLM_PLE_INT8_DIR", ""),
++    "VLLM_PLE_INT8_MEMORY": lambda: (
++        os.getenv("VLLM_PLE_INT8_MEMORY", "False").lower() in ("true", "1")
++    ),    # Log model inspection after loading.
+     # If enabled, logs a transformers-style hierarchical view of the model
+     # with quantization methods and attention backends.
+     "VLLM_LOG_MODEL_INSPECTION": lambda: bool(

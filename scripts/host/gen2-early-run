@@ -1,0 +1,5 @@
+#!/bin/bash
+# Invoked at nvidia module-add: the Gen2 window is open now.
+export CMP170HX_GEN2_MAX_ITERATIONS="${CMP170HX_GEN2_MAX_ITERATIONS:-1200}"
+export CMP170HX_GEN2_RETRAIN_INTERVAL="${CMP170HX_GEN2_RETRAIN_INTERVAL:-0.05}"
+exec /usr/local/sbin/gen2-hammer >>/var/log/gen2-early.log 2>&1

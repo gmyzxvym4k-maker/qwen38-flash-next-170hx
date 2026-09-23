@@ -1,0 +1,15 @@
+# 引擎 /metrics 关键计数器快照（2026-09-23 19:4x CST，实例已运行约 1h15m）
+# 取法：curl -s http://127.0.0.1:18420/metrics | grep -E '^(vllm:prefix_cache|vllm:spec_decode|vllm:kv_offload|vllm:gpu_cache_usage|vllm:num_requests)'
+vllm:spec_decode_num_drafts_total{engine="0",model_name="qwen3.8-flash-next"} 114240.0
+vllm:spec_decode_num_draft_tokens_total{engine="0",model_name="qwen3.8-flash-next"} 456960.0
+vllm:spec_decode_num_accepted_tokens_total{engine="0",model_name="qwen3.8-flash-next"} 313601.0
+vllm:kv_offload_cpu_cache_usage_perc{engine="0",model_name="qwen3.8-flash-next"} 0.0
+vllm:kv_offload_cpu_cache_fill_perc{engine="0",model_name="qwen3.8-flash-next"} 0.025834658187599363
+vllm:num_requests_running{engine="0",model_name="qwen3.8-flash-next"} 0.0
+vllm:num_requests_waiting{engine="0",model_name="qwen3.8-flash-next"} 0.0
+vllm:num_requests_waiting_by_reason{engine="0",model_name="qwen3.8-flash-next",reason="capacity"} 0.0
+vllm:num_requests_waiting_by_reason{engine="0",model_name="qwen3.8-flash-next",reason="deferred"} 0.0
+vllm:prefix_cache_queries_total{engine="0",model_name="qwen3.8-flash-next"} 5.0904579e+07
+vllm:prefix_cache_hits_total{engine="0",model_name="qwen3.8-flash-next"} 4.8429904e+07
+vllm:prompt_tokens_total{engine="0",model_name="qwen3.8-flash-next"} 5.0818766e+07
+vllm:generation_tokens_total{engine="0",model_name="qwen3.8-flash-next"} 427573.0

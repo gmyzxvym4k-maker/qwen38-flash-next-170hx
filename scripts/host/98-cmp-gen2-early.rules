@@ -1,0 +1,4 @@
+# CMP 170HX: the PCIe Gen2 capability window only exists while the nvidia
+# module is probing. Start the retrain hammer from the module-add event so it
+# is already polling when the window opens.
+ACTION=="add", SUBSYSTEM=="module", KERNEL=="nvidia", RUN+="/usr/local/sbin/gen2-early-launch"

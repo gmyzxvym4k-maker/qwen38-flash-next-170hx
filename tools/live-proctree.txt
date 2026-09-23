@@ -1,0 +1,5 @@
+# PP2 进程树（VLLM::Worker_PP0 → GPU0，Worker_PP1 → GPU1，PleOffloadWorker 在 CPU 侧）
+2619       1 Ss      06:41:34 python3
+1742810 1740595 SLl     01:15:15 VLLM::EngineCor
+1743601 1742810 RLl     01:15:05 VLLM::Worker_PP
+1744256 1742810 RLl     01:14:56 VLLM::Worker_PP

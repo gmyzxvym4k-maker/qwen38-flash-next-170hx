@@ -1,0 +1,12 @@
+--- a/v1/metrics/stats.py
++++ b/v1/metrics/stats.py
+@@ -191,6 +191,9 @@
+     num_waiting_reqs: int = 0  # length of the "waiting" request queue
+     num_skipped_waiting_reqs: int = 0  # length of the "skipped waiting" queue
+ 
++    # [DSH patch 0916] 每请求实时预填充/输出进度（dsh_vllm_logger 消费）
++    prefill_progress: list | None = None
++
+     # These are used for internal DP load-balancing.
+     step_counter: int = 0
+     current_wave: int = 0

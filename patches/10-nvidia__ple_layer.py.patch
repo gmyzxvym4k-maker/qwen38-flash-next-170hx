@@ -1,0 +1,59 @@
+--- a/models/qwen3_8_flash_next/nvidia/ple_layer.py
++++ b/models/qwen3_8_flash_next/nvidia/ple_layer.py
+@@ -428,13 +428,37 @@
+         ngram_ids = torch.cat(id_blocks, dim=-1)
+         if output_buffer is not None:
+             output = output_buffer[:num_tokens, : self.embedding_dim]
+-            torch.index_select(
+-                self.ngram_embedding.weight,
+-                0,
+-                ngram_ids.reshape(-1),
+-                out=output.reshape(-1, self.head_dim),
+-            )
++            weight = self.ngram_embedding.weight
++            row_scales = getattr(self.ngram_embedding, "_ple_row_scales", None)
++            flat = ngram_ids.reshape(-1)
++            if row_scales is not None:
++                # [FN-PLE-INT8] Per-row INT8 lookup + dequantisation, entirely
++                # inside this CPU worker.  The GPU keeps receiving bf16 rows,
++                # so IPC buffers, H2D traffic and VRAM are identical to the
++                # BF16 path; only the resident table bytes halve.
++                q = torch.index_select(weight, 0, flat)
++                s = torch.index_select(row_scales, 0, flat).unsqueeze(-1)
++                torch.mul(
++                    q.to(output.dtype),
++                    s.to(output.dtype),
++                    out=output.reshape(-1, self.head_dim),
++                )
++            else:
++                torch.index_select(
++                    weight,
++                    0,
++                    flat,
++                    out=output.reshape(-1, self.head_dim),
++                )
+             return output
++        if getattr(self.ngram_embedding, "_ple_row_scales", None) is not None:
++            # [FN-PLE-INT8] Refuse to emit raw INT8 rows through the regular
++            # embedding path; that would silently produce garbage output.
++            raise RuntimeError(
++                "[FN-PLE-INT8] the INT8 n-gram table is only served through the "
++                "CPU-offload path (VLLM_PLE_CPU_OFFLOAD=1, VLLM_PLE_DISK_RESIDENT=1, "
++                "VLLM_PLE_INT8_DIR=<artifact dir>)."
++            )
+         return self.ngram_embedding(ngram_ids).flatten(-2)
+ 
+     def get_offload_output_dtype(self, default_dtype: torch.dtype) -> torch.dtype:
+@@ -442,6 +466,12 @@
+         embedding = getattr(self, "ngram_embedding", None)
+         weight = getattr(embedding, "weight", None)
+         if weight is not None:
++            if weight.dtype == torch.int8:
++                # [FN-PLE-INT8] Row-wise INT8 is dequantised in the CPU worker,
++                # so both the pinned scratch and the GPU IPC buffer stay in the
++                # model dtype.  This single function drives the dtype on both
++                # sides (worker.py pinned buffer, connector.py GPU buffer).
++                return default_dtype
+             return weight.dtype
+         if hasattr(self, "_offload_weight_scale"):
+             return torch.float8_e4m3fn

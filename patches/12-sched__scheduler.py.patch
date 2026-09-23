@@ -1,0 +1,47 @@
+--- a/v1/core/sched/scheduler.py
++++ b/v1/core/sched/scheduler.py
+@@ -177,6 +177,9 @@
+ 
+         # req_id -> Request
+         self.requests: dict[str, Request] = {}
++        # [DSH patch 0916] 每请求前缀缓存命中数（admission 时 get_computed_blocks
++        # 返回的 local hit 数），供 make_stats 的 prefill_progress 使用
++        self._dsh_cached: dict[str, int] = {}
+         # Scheduling policy
+         try:
+             self.policy = SchedulingPolicy(self.scheduler_config.policy)
+@@ -1090,6 +1093,8 @@
+                     self.kv_cache_manager.record_prefix_cache_stats(
+                         request, num_new_local_computed_tokens
+                     )
++                # [DSH patch 0916] 记录本请求前缀缓存命中数（cached 单列）
++                self._dsh_cached[request.request_id] = num_new_local_computed_tokens
+ 
+                 request = request_queue.pop_request()
+                 if load_kv_async:
+@@ -2617,8 +2622,25 @@
+         connector_stats_payload = (
+             kv_connector_stats.data if kv_connector_stats else None
+         )
++        # [DSH patch 0916] 每请求实时进度（dsh_vllm_logger 插件消费写
++        # vllm-live-prefill.jsonl）：computed = num_computed_tokens −
++        # num_in_flight_tokens（本步尚未执行完的调度量）。
++        prefill_progress = None
++        if self.log_stats:
++            rows = []
++            for r in self.running:
++                computed = max(0, r.num_computed_tokens - r.num_in_flight_tokens)
++                rows.append({
++                    "request_id": r.request_id,
++                    "arrival": r.arrival_time,
++                    "prompt_total": r.num_prompt_tokens,
++                    "computed": computed,
++                    "cached": self._dsh_cached.get(r.request_id, 0),
++                })
++            prefill_progress = rows
+         return SchedulerStats(
+             num_running_reqs=len(self.running),
++            prefill_progress=prefill_progress,
+             num_waiting_reqs=len(self.waiting),
+             num_skipped_waiting_reqs=len(self.skipped_waiting),
+             kv_cache_usage=self.kv_cache_manager.usage,
