@@ -1,0 +1,5 @@
+#!/bin/bash
+# udev RUN+= handlers block the event queue, so return immediately and let the
+# real worker run detached.
+setsid /usr/local/sbin/gen2-early-run >/dev/null 2>&1 &
+exit 0

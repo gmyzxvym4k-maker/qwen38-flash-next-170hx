@@ -1,0 +1,14 @@
+--- a/v1/worker/gpu_worker.py
++++ b/v1/worker/gpu_worker.py
+@@ -226,8 +226,9 @@
+                 f"({parallel_config.data_parallel_size_local}/"
+                 f"{parallel_config.data_parallel_size} local ranks)"
+             )
+-        if parallel_config.pipeline_parallel_size != 1:
+-            unsupported.append(f"PP={parallel_config.pipeline_parallel_size}")
++        # [FN-PLE-PP] PP>1 is supported for PLE CPU offload: each rank only
++        # owns the PLE layers in its own stage, so the old PP=1 rejection
++        # is no longer required.
+         if parallel_config.prefill_context_parallel_size != 1:
+             unsupported.append(f"PCP={parallel_config.prefill_context_parallel_size}")
+         if parallel_config.decode_context_parallel_size != 1:

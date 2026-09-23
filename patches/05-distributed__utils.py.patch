@@ -1,0 +1,28 @@
+--- a/distributed/utils.py
++++ b/distributed/utils.py
+@@ -141,6 +141,7 @@
+     are attempting to reduce maximum memory consumption across partitions.
+     """
+     partition_list_str = envs.VLLM_PP_LAYER_PARTITION
++    partitions = None
+     if partition_list_str is not None:
+         try:
+             partitions = [int(layer) for layer in partition_list_str.split(",")]
+@@ -148,11 +149,12 @@
+             raise ValueError(
+                 "Invalid partition string: {}".format(partition_list_str)
+             ) from err
+-        if len(partitions) != pp_size:
+-            raise ValueError(f"{len(partitions)=} does not match {pp_size=}.")
+-        if sum(partitions) != num_hidden_layers:
+-            raise ValueError(f"{sum(partitions)=} does not match {num_hidden_layers=}.")
+-    else:
++        # [FN-PP-FALLBACK] A mismatched VLLM_PP_LAYER_PARTITION must not be
++        # fatal: offload/monitor workers may be constructed with a
++        # different pp_size than the main engine; fall back to default.
++        if len(partitions) != pp_size or sum(partitions) != num_hidden_layers:
++            partitions = None
++    if partitions is None:
+         layers_per_partition = num_hidden_layers // pp_size
+         partitions = [layers_per_partition for _ in range(pp_size)]
+ 

@@ -1,0 +1,97 @@
+--- a/v1/kv_offload/cpu/gpu_worker.py
++++ b/v1/kv_offload/cpu/gpu_worker.py
+@@ -233,6 +233,70 @@
+     )
+ 
+ 
++def _kvoff_c3_ranges(tensors):
++    # [local-patch kvoff-c3] (idx, begin, end) address spans of a tensor list.
++    out = []
++    for i, t in enumerate(tensors):
++        base = t.data_ptr()
++        out.append((i, base, base + t.numel() * t.element_size()))
++    return out
++
++
++def _kvoff_c3_dump_failed_batch(handler, src, dst, sizes, job_id):
++    """[local-patch kvoff-c3] Bug B(0923) 取证：批拷贝抛错时逐条打印
++    src/dst/size 并对照本 rank 张量地址区间标记非法项，然后由调用方
++    原样 re-raise。只加日志，不改任何行为。"""
++    try:
++        src_ts = getattr(handler, "_src_tensors", None)
++        dst_ts = getattr(handler, "_dst_tensors", None)
++        sr = _kvoff_c3_ranges(src_ts) if src_ts is not None else []
++        dr = _kvoff_c3_ranges(dst_ts) if dst_ts is not None else []
++        logger.error(
++            "[kvoff-c3] batch copy FAILED job=%s gpu_to_cpu=%s ops=%d",
++            job_id,
++            getattr(handler, "gpu_to_cpu", None),
++            len(sizes),
++        )
++        logger.error(
++            "[kvoff-c3]   src_ranges=%s", [(hex(b), hex(e)) for _, b, e in sr]
++        )
++        logger.error(
++            "[kvoff-c3]   dst_ranges=%s", [(hex(b), hex(e)) for _, b, e in dr]
++        )
++
++        def _in(ptr, rng):
++            return any(b <= ptr < e for _, b, e in rng)
++
++        for i in range(len(sizes)):
++            s = int(src[i])
++            d = int(dst[i])
++            sz = int(sizes[i])
++            s_ok = _in(s, sr) if sr else None
++            d_ok = _in(d, dr) if dr else None
++            bad = (
++                sz <= 0
++                or (s % 16)
++                or (d % 16)
++                or (sz % 16)
++                or (s_ok is False)
++                or (d_ok is False)
++            )
++            if bad or i < 16:
++                logger.error(
++                    "[kvoff-c3]   op[%d]%s src=%#x(in_src=%s) "
++                    "dst=%#x(in_dst=%s) size=%d",
++                    i,
++                    " <<<BAD" if bad else "",
++                    s,
++                    s_ok,
++                    d,
++                    d_ok,
++                    sz,
++                )
++    except Exception:  # noqa: BLE001  取证永不掩盖原始异常
++        logger.exception("[kvoff-c3] forensics dump failed")
++
++
+ class SingleDirectionOffloadingHandler:
+     """
+     Handles transfers for a single direction, either CPU->GPU or GPU->CPU.
+@@ -654,12 +718,17 @@
+         with current_platform.stream(stream):
+             start_event.record(stream)
+             if op_idx > 0:
+-                self._swap_blocks_batch(
+-                    src,
+-                    dst,
+-                    sizes,
+-                    is_src_access_order_any=is_src_access_order_any,
+-                )
++                try:
++                    self._swap_blocks_batch(
++                        src,
++                        dst,
++                        sizes,
++                        is_src_access_order_any=is_src_access_order_any,
++                    )
++                except Exception:
++                    # [local-patch kvoff-c3] 先 dump 再原样上抛。
++                    _kvoff_c3_dump_failed_batch(self, src, dst, sizes, job_id)
++                    raise
+             end_event.record(stream)
+ 
+         self._transfer_events[job_id] = end_event

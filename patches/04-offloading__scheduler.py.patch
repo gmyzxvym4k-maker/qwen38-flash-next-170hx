@@ -1,0 +1,301 @@
+--- a/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py
++++ b/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py
+@@ -104,6 +104,20 @@
+     # of these groups is volatile and lacks a stable hash, so it must
+     # be excluded from store and load scheduling.
+     is_eagle_group: bool = False
++    # [local-patch kvoff-c1] False for groups whose KV can never be reused
++    # via prefix matching (e.g. the QSA key ring, CircularBufferSpec). Such
++    # groups are excluded from store/load/lookup entirely while keeping
++    # their position in kv_group_configs (group_idx is load-bearing).
++    prefix_cacheable: bool = True
++
++
++def _c3c_group_hist(keys):
++    # [local-patch kvoff-c3c] count offload keys per packed group index.
++    h: dict[int, int] = {}
++    for k in keys:
++        g = int.from_bytes(k[-4:], "big")
++        h[g] = h.get(g, 0) + 1
++    return h
+ 
+ 
+ def get_sliding_window_size_in_chunks(
+@@ -192,6 +206,10 @@
+         full_attn_tokens_per_chunk: set[int] = set()
+         for idx, tokens_per_block in enumerate(spec.tokens_per_block):
+             kv_spec = kv_cache_config.kv_cache_groups[idx].kv_cache_spec
++            # [local-patch kvoff-c1] non-prefix-cacheable groups never take
++            # part in chunk alignment detection.
++            if not getattr(kv_spec, "prefix_cacheable", True):
++                continue
+             sw = get_sliding_window_size_in_chunks(
+                 kv_spec, tokens_per_block * spec.blocks_per_chunk
+             )
+@@ -242,8 +260,16 @@
+         for idx, tokens_per_block in enumerate(spec.tokens_per_block):
+             kv_cache_group = kv_cache_config.kv_cache_groups[idx]
+             kv_spec = kv_cache_group.kv_cache_spec
+-            sw = get_sliding_window_size_in_chunks(
+-                kv_spec, tokens_per_block * spec.blocks_per_chunk
++            # [local-patch kvoff-c1] ring specs are not among the window
++            # helper's four recognized kinds (would hit its FullAttention
++            # assert); they are excluded downstream, so skip classification.
++            group_prefix_cacheable = bool(getattr(kv_spec, "prefix_cacheable", True))
++            sw = (
++                get_sliding_window_size_in_chunks(
++                    kv_spec, tokens_per_block * spec.blocks_per_chunk
++                )
++                if group_prefix_cacheable
++                else None
+             )
+             kv_group_configs_list.append(
+                 GroupOffloadConfig(
+@@ -264,6 +290,7 @@
+                         isinstance(kv_spec, MambaSpec)
+                         and kv_spec.mamba_cache_mode == "align"
+                     ),
++                    prefix_cacheable=group_prefix_cacheable,
+                 )
+             )
+         kv_group_configs = tuple(kv_group_configs_list)
+@@ -357,6 +384,9 @@
+         for group_config, group_state in zip(
+             self.config.kv_group_configs, self.group_states
+         ):
++            # [local-patch kvoff-c1] no offload keys for non-cacheable groups.
++            if not group_config.prefix_cacheable:
++                continue
+             for req_block_hash in islice(
+                 self.req.block_hashes,
+                 group_config.hashes_per_chunk * len(group_state.offload_keys)
+@@ -376,7 +406,12 @@
+             return
+ 
+         assert len(new_block_id_groups) == len(self.group_states)
+-        for group_state, new_blocks in zip(self.group_states, new_block_id_groups):
++        # [local-patch kvoff-c1] skip non-cacheable groups but keep positions.
++        for group_config, group_state, new_blocks in zip(
++            self.config.kv_group_configs, self.group_states, new_block_id_groups
++        ):
++            if not group_config.prefix_cacheable:
++                continue
+             group_state.block_ids.extend(new_blocks)
+ 
+     def storable_chunks(
+@@ -423,6 +458,9 @@
+         for group_config, group_state in zip(
+             self.config.kv_group_configs, self.group_states
+         ):
++            # [local-patch kvoff-c1]
++            if not group_config.prefix_cacheable:
++                continue
+             group_state.num_hit_chunks = (
+                 num_cached_tokens // group_config.tokens_per_chunk
+             )
+@@ -504,6 +542,10 @@
+         full_attention_groups: list[int] = []
+         sliding_window_groups: list[int] = []
+         for group_config in self.config.kv_group_configs:
++            # [local-patch kvoff-c1] keep non-cacheable groups out of the
++            # lookup classification (position in kv_group_configs is kept).
++            if not group_config.prefix_cacheable:
++                continue
+             if group_config.sliding_window_size_in_chunks is None:
+                 full_attention_groups.append(group_config.group_idx)
+             else:
+@@ -641,8 +683,23 @@
+         Returns 0 on miss, None if the backend deferred a lookup."""
+         defer_lookup = False
+         consecutive_hits = 0
++        # [local-patch kvoff-c3e] scan-result probes
++        _c3e_n = 0
++        _c3e_mid: list = []
+         for idx in range(len(keys) - 1, -1, -1):
+-            match self.manager.lookup(keys[idx], req_context):
++            _c3e_r = self.manager.lookup(keys[idx], req_context)
++            if _c3e_n < 8:
++                _c3e_n += 1
++                logger.info(
++                    "[kvoff-c3e] scan q=%d win=%d idx=%d r=%s key=%s",
++                    len(keys), sliding_window_size, idx,
++                    str(_c3e_r)[:20], keys[idx][:6].hex(),
++                )
++            if 24 <= idx <= 30:
++                _c3e_mid.append((idx, str(_c3e_r)[:12], keys[idx][:6].hex()))
++                if idx == 24:
++                    logger.info("[kvoff-c3e] scanmid %s", _c3e_mid)
++            match _c3e_r:
+                 case LookupResult.HIT:
+                     consecutive_hits += 1
+                 case LookupResult.HIT_PENDING:
+@@ -667,6 +724,9 @@
+         for group_config, group_state in zip(
+             self.config.kv_group_configs, req_status.group_states
+         ):
++            # [local-patch kvoff-c1]
++            if not group_config.prefix_cacheable:
++                continue
+             if group_config.sliding_window_size_in_chunks is None:
+                 self.manager.touch(group_state.offload_keys, req_status.req_context)
+             else:
+@@ -740,9 +800,16 @@
+                     len(offload_keys) >= req_status.req.num_tokens // tokens_per_chunk
+                 )
+ 
+-                is_eagle_unverified = (
+-                    group_config.is_eagle_group and group_idx not in eagle_verified
+-                )
++                # [local-patch kvoff-c5a] Disarm the lookup-side eagle +1/-1
++                # double penalty. The store side already excludes the volatile
++                # draft tail (storable_chunks -1 while decoding and at finish)
++                # and rows below the accepted frontier are never rewritten, so
++                # the popped chunk was always a final, stable one. With MTP on,
++                # the from_spec fallback marks ALL groups eagle: every
++                # multi-turn delta (typically 1 chunk) collapsed to 0, and sw
++                # groups got a spurious window +1 (GDN base window is 1),
++                # making CPU-tier hits structurally impossible.
++                is_eagle_unverified = False
+ 
+                 # Constrain to a chunk-aligned boundary for this group.
+                 max_hit_size_tokens = min(
+@@ -782,13 +849,40 @@
+                     )
+                 else:
+                     required_window = sliding_window_size_in_chunks
+-                    if is_eagle_unverified:
++                    # [local-patch kvoff-c4] Segmented sw groups (GDN align
++                    # mode) only store per-segment tail checkpoints, so the
++                    # volatile draft-tail neighbour needed for the eagle +1
++                    # is never present; requiring 2 consecutive hits makes
++                    # the lookup structurally impossible (always 0 -> whole
++                    # request's CPU hit collapses). Skip the +1 when the
++                    # group is alignment-segmented; the caller's eagle -1
++                    # then backs off one extra chunk (safe recompute).
++                    if (
++                        is_eagle_unverified
++                        and group_config.alignment_chunk_count is None
++                    ):
+                         required_window += 1
+                     num_hit_chunks = self._sliding_window_lookup(
+                         offload_keys,
+                         required_window,
+                         req_status.req_context,
+                     )
++                # [local-patch kvoff-c3b] probe: per-group hit.
++                logger.info(
++                    "[kvoff-c3b]   grp=%d sw=%s eagle=%s q=%d hit=%s max=%d "
++                    "qkeys=%s",
++                    group_idx,
++                    sliding_window_size_in_chunks,
++                    group_config.is_eagle_group,
++                    num_chunks - start_chunk_idx,
++                    num_hit_chunks,
++                    max_hit_size_tokens,
++                    (
++                        offload_keys[0][:6].hex() + ".." + offload_keys[-1][:6].hex()
++                        if len(offload_keys)
++                        else "-"
++                    ),
++                )
+                 if num_hit_chunks == 0:
+                     return 0
+ 
+@@ -984,6 +1078,34 @@
+                     req_status.deferred_lookup_start_time = lookup_start
+             else:
+                 self._maybe_observe_lookup_async_delay(req_status)
++        # [local-patch kvoff-c3b] probe: final lookup verdict per request.
++        logger.info(
++            "[kvoff-c3b] LOOKUP req=%s skip_read=%s num_computed=%d hit=%s",
++            request.request_id,
++            request.skip_reading_prefix_cache,
++            num_computed_tokens,
++            num_hit_tokens,
++        )
++        # [local-patch kvoff-c3c] probe: per-group grid + query key samples.
++        logger.info(
++            "[kvoff-c3c] qgrid req=%s %s",
++            request.request_id,
++            [
++                (
++                    gc.group_idx,
++                    gc.tokens_per_chunk,
++                    gc.hashes_per_chunk,
++                    len(gs.offload_keys),
++                    gs.offload_keys[0][:6].hex() if gs.offload_keys else "-",
++                    gs.offload_keys[min(2, len(gs.offload_keys) - 1)][:6].hex()
++                    if gs.offload_keys
++                    else "-",
++                )
++                for gc, gs in zip(
++                    self.config.kv_group_configs, req_status.group_states
++                )
++            ],
++        )
+         req_status.update_num_hit_chunks(num_computed_tokens + (num_hit_tokens or 0))
+ 
+         self._touch(req_status)
+@@ -1014,6 +1136,14 @@
+             req_status.group_states,
+             blocks.blocks,
+         ):
++            # [local-patch kvoff-c1] non-cacheable groups are never stored or
++            # loaded; append 0 placeholders so group_sizes/block_indices stay
++            # positionally aligned with kv_cache_groups on the worker side.
++            if not group_config.prefix_cacheable:
++                group_sizes.append(0)
++                block_indices.append(0)
++                continue
++
+             self._current_batch_allocated_block_ids.update(
+                 block.block_id for block in group_blocks if block.block_id != 0
+             )
+@@ -1278,6 +1408,9 @@
+             for group_config, group_state in zip(
+                 self.config.kv_group_configs, req_status.group_states
+             ):
++                # [local-patch kvoff-c1]
++                if not group_config.prefix_cacheable:
++                    continue
+                 num_chunks = req_status.storable_chunks(
+                     group_config, group_state, num_offloadable_tokens
+                 )
+@@ -1340,6 +1473,22 @@
+             self._touch(req_status)
+ 
+             keys_to_store = set(store_output.keys_to_store)
++            # [local-patch kvoff-c3d] probe: per-group stored hash range.
++            logger.info(
++                "[kvoff-c3d] skeys req=%s n=%d bygrp=%s grphash=%s",
++                req_id,
++                len(keys_to_store),
++                _c3c_group_hist(keys_to_store),
++                {
++                    g: (
++                        min(k[:6].hex() for k in keys_to_store
++                            if int.from_bytes(k[-4:], "big") == g),
++                        max(k[:6].hex() for k in keys_to_store
++                            if int.from_bytes(k[-4:], "big") == g),
++                    )
++                    for g in sorted({int.from_bytes(k[-4:], "big") for k in keys_to_store})
++                },
++            )
+ 
+             group_sizes: list[int] = []
+             block_indices: list[int] = []
+@@ -1423,6 +1572,14 @@
+                 req_id=req_id, src_spec=src_spec, dst_spec=dst_spec
+             )
+ 
++            # [local-patch kvoff-c3b] probe: store job composition.
++            logger.info(
++                "[kvoff-c3b] STORE req=%s keys=%d upto=%d groups=%s",
++                req_id,
++                len(keys_to_store),
++                num_offloadable_tokens,
++                group_sizes,
++            )
+             logger.debug(
+                 "Request %s offloading %s chunks upto %d tokens (job %d)",
+                 req_id,

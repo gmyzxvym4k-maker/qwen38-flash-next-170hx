@@ -1,0 +1,9 @@
+[Unit]
+Description=Flash-Next 18420 watchdog (one shot per tick)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /home/ll/deploy/fnx-18420-watchdog.sh
+# 看门狗会 spawn 实例（setsid nohup），不能被本服务带走
+KillMode=process
+TimeoutStartSec=600

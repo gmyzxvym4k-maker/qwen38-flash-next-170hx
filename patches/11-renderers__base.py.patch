@@ -1,0 +1,23 @@
+--- a/renderers/base.py
++++ b/renderers/base.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ import asyncio
++import os
+ import time
+ from abc import ABC, abstractmethod
+ from collections.abc import Mapping, Sequence
+@@ -217,6 +218,12 @@
+         *,
+         log_prefix: str,
+     ) -> None:
++        # 【本地补丁 2026-09-19】纯文本服务跳过 ~33s 的多模态 dummy warmup。
++        # 变量名与 127 机 syv-venv2 上的同款补丁一致：VLLM_SKIP_MM_WARMUP=1。
++        # 代价：跳过后的首次图片请求会一次性付这笔开销（本服务不接图片）。
++        if os.environ.get("VLLM_SKIP_MM_WARMUP", "") == "1":
++            logger.info("%s warmup skipped (VLLM_SKIP_MM_WARMUP=1)", log_prefix)
++            return
+         from vllm.multimodal.processing import TimingContext
+ 
+         model_config = self.model_config

@@ -1,0 +1,14 @@
+[Unit]
+Description=Set NVIDIA GPU power limit and persistence mode (CMP 170HX)
+After=systemd-udevd.service nvidia-persistenced.service
+Wants=nvidia-persistenced.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 脚本内部最多重试 180s（等驱动就绪），systemd 侧放宽到 300s 免被中途杀掉
+TimeoutStartSec=300
+ExecStart=/usr/local/bin/gpu-power-limit.sh
+
+[Install]
+WantedBy=basic.target

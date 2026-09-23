@@ -1,0 +1,14 @@
+[Unit]
+Description=Prepare vLLM chroot (mount /proc /sys /dev + NVIDIA libs)
+After=systemd-udevd.service local-fs.target
+Wants=local-fs.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/home/ll/deploy/setup-chroot.sh
+TimeoutStartSec=300
+
+[Install]
+WantedBy=basic.target

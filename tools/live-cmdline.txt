@@ -1,0 +1,64 @@
+# 生产实例实跑快照（2026-09-23 19:3x CST，端口 18420）
+# 取法：tr '\0' '\n' < /proc/<APIServer pid>/cmdline   ← 必须读 /proc，pgrep -fa 会自匹配 ssh（docs/08#P43）
+# 注意：主进程 comm 恒为 python3，worker/engine 才是 VLLM::*（docs/08#P38）
+主进程： PID=1740595（APIServer，comm 恒为 python3）
+argv: /usr/bin/python3.12
+argv: -m
+argv: vllm.entrypoints.cli.main
+argv: serve
+argv: /media/ll/data/models-1m/Qwen3.8-Flash-Next-W4A16-AutoRound-1M
+argv: --served-model-name
+argv: qwen3.8-flash-next
+argv: --host
+argv: 0.0.0.0
+argv: --port
+argv: 18420
+argv: --load-format
+argv: safetensors
+argv: --safetensors-load-strategy
+argv: lazy
+argv: --distributed-executor-backend
+argv: mp
+argv: --tensor-parallel-size
+argv: 1
+argv: --pipeline-parallel-size
+argv: 2
+argv: --dtype
+argv: bfloat16
+argv: --max-model-len
+argv: 1048576
+argv: --block-size
+argv: 1616
+argv: --mamba-ssm-cache-dtype
+argv: float32
+argv: --max-num-seqs
+argv: 3
+argv: --gpu-memory-utilization
+argv: 0.95
+argv: --enable-prefix-caching
+argv: --enable-prompt-tokens-details
+argv: --max-num-batched-tokens
+argv: 8192
+argv: --moe-backend
+argv: auto
+argv: --reasoning-parser
+argv: qwen3
+argv: --enable-auto-tool-choice
+argv: --tool-call-parser
+argv: qwen3_coder
+argv: --trust-remote-code
+argv: --default-chat-template-kwargs
+argv: {"enable_thinking":true,"preserve_thinking":true}
+argv: --override-generation-config
+argv: {"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.1,"repetition_penalty":1.05}
+argv: -cc.splitting_ops=["vllm::unified_attention_with_output","vllm::unified_mla_attention_with_output","vllm::mamba_mixer2","vllm::mamba_mixer","vllm::short_conv","vllm::qwen3_8_flash_next_ple_short_conv","vllm::qwen3_8_flash_next_qsa_with_output","vllm::linear_attention","vllm::qwen_gdn_attention_core","vllm::qwen_gdn_attention_core_fused_norm_packed","vllm::gdn_attention_core_xpu","vllm::olmo_hybrid_gdn_full_forward","vllm::sparse_attn_indexer","vllm::rocm_aiter_sparse_attn_indexer","vllm::deepseek_v4_attention","vllm::hpc_rope_norm_forward","vllm::ple_mmap_lookup","vllm::ple_gds_lookup"]
+argv: -cc.inductor_compile_config={"combo_kernels":false,"benchmark_combo_kernel":false}
+argv: --no-enable-flashinfer-autotune
+argv: -cc.cudagraph_mode=FULL_AND_PIECEWISE
+argv: -cc.cudagraph_capture_sizes=[1,2,4,8,16,24,32,40]
+argv: --async-scheduling
+argv: --speculative-config
+argv: {"method":"mtp","num_speculative_tokens":4,"use_local_argmax_reduction":false}
+argv: --kv-transfer-config
+argv: {"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":103079215104,"store_threshold":2}}
+

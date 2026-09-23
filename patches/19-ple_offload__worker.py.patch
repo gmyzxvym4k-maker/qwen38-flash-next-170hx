@@ -1,0 +1,315 @@
+--- a/v1/ple_offload/worker.py
++++ b/v1/ple_offload/worker.py
+@@ -389,6 +389,35 @@
+         )
+         offload_prefixes = tuple(f"{name}." for name in offload_layers)
+ 
++        # [FN-PLE-INT8] Prefer the offline INT8 artifacts (47.7 GiB int8 +
++        # 0.6 GiB bf16 row scales): small enough to stay fully page-resident
++        # in 62 GiB RAM, removing the mid-service table I/O that caps BF16.
++        if envs.VLLM_PLE_DISK_RESIDENT and self._attach_int8_disk_resident_ngram_table(
++            offload_layers
++        ):
++            for layer in offload_layers.values():
++                process_weights_after_loading(layer, model_config, torch.device("cpu"))
++            self._layers.update(offload_layers)
++            del model
++            logger.info("PLE INT8 disk-resident weight loading complete.")
++            return
++
++        # [FN-PLE-DISK] Opt-in: serve the n-gram table straight from the
++        # checkpoint file, bypassing the ~95 GiB CPU allocation entirely.
++        # [FN-PLE-INT8MEM] 内存驻留模式下跳过 BF16 mmap 回落：位置=内存必须真落匿名堆
++        # （INT8 产物缺失时由后续传统路径分配 BF16 匿名堆，而不是退回磁盘）。
++        if (
++            envs.VLLM_PLE_DISK_RESIDENT
++            and not envs.VLLM_PLE_INT8_MEMORY
++            and self._attach_disk_resident_ngram_table(offload_layers)
++        ):
++            for layer in offload_layers.values():
++                process_weights_after_loading(layer, model_config, torch.device("cpu"))
++            self._layers.update(offload_layers)
++            del model
++            logger.info("PLE disk-resident weight loading complete.")
++            return
++
+         # Step 3: filter checkpoint tensors before model.load_weights(). The
+         # conditional-generation checkpoint uses HF names such as
+         # ``model.language_model.*`` while named_modules exposes mapped vLLM
+@@ -470,6 +499,276 @@
+         del model
+         logger.info("PLE weight loading complete.")
+ 
++    def _attach_disk_resident_ngram_table(
++        self, offload_layers: dict[str, PleOffloadLayer]
++    ) -> bool:
++        """[FN-PLE-DISK] Back the n-gram table with a file mmap.
++
++        The checkpoint stores the table as ``split_ngram_parts`` separate
++        ``ngram_embedding.shard_<i>.weight`` tensors that tile
++        ``ngram_embedding.weight`` in index order.  When those tensors sit
++        back-to-back inside one safetensors shard, the whole table is a single
++        contiguous byte run and one mmap can serve it, so this process never
++        materialises ~95 GiB of anonymous memory.  Returns False (caller falls
++        back to the regular loader) whenever the layout does not qualify.
++        """
++        import glob
++        import json as _json
++        import mmap as _mmap
++        import os
++        import struct
++
++        if not offload_layers:
++            return False
++        embeddings = []
++        for layer in offload_layers.values():
++            embedding = getattr(layer, "ngram_embedding", None)
++            if embedding is None:
++                return False
++            embeddings.append(embedding)
++
++        model_path = self.vllm_config.model_config.model
++        marker = "ngram_embedding.shard_"
++        selected = None
++        for candidate in sorted(glob.glob(os.path.join(model_path, "*.safetensors"))):
++            try:
++                with open(candidate, "rb") as probe:
++                    header_len = struct.unpack("<Q", probe.read(8))[0]
++                    header = _json.loads(probe.read(header_len))
++            except Exception:
++                continue
++            shards = {
++                name: entry
++                for name, entry in header.items()
++                if marker in name and name.endswith(".weight")
++            }
++            if shards:
++                # [FN-PLE-DISK] Remember where the data section starts inside
++                # the file: safetensors writes an 8-byte length prefix before
++                # the JSON header, and data_offsets are relative to that data
++                # section, not to the file.
++                selected = (candidate, shards, 8 + header_len)
++                break
++        if selected is None:
++            return False
++        path, shards, data_base = selected
++
++        def shard_index(name: str) -> int:
++            return int(name.split(marker, 1)[1][: -len(".weight")])
++
++        try:
++            ordered = sorted(shards.items(), key=lambda kv: shard_index(kv[0]))
++        except ValueError:
++            return False
++
++        start = ordered[0][1]["data_offsets"][0]
++        end = start
++        for _, entry in ordered:
++            begin, finish = entry["data_offsets"]
++            if begin != end:
++                return False
++            end = finish
++
++        total_rows = sum(entry["shape"][0] for _, entry in ordered)
++        hidden = ordered[0][1]["shape"][1]
++        for embedding in embeddings:
++            if int(embedding.org_vocab_size) != total_rows:
++                return False
++            if int(embedding.embedding_dim) != hidden:
++                return False
++
++        handle = open(path, "rb")
++        # ACCESS_COPY: reads come from the page cache, any stray write lands in
++        # a private page instead of corrupting the 95 GiB checkpoint shard.
++        mapping = _mmap.mmap(handle.fileno(), 0, access=_mmap.ACCESS_COPY)
++        raw = torch.frombuffer(mapping, dtype=torch.uint8)
++        # [FN-PLE-DISK] Shift by the header size: slicing from 0 used to read
++        # the safetensors header as table data, misaligning every n-gram row.
++        byte_lo = data_base + start
++        byte_hi = data_base + end
++        table = raw[byte_lo:byte_hi].view(torch.bfloat16).view(total_rows, hidden)
++
++        # The tensor only borrows the mapping's memory: keep every owner alive.
++        self._disk_resident_table = table
++        self._disk_resident_map = mapping
++        self._disk_resident_file = handle
++        for embedding in embeddings:
++            embedding.weight = torch.nn.Parameter(table, requires_grad=False)
++
++        logger.info(
++            "[FN-PLE-DISK] n-gram table attached from %s: %d shard(s) "
++            "shape=%s dtype=%s contiguous=%.2f GiB (zero heap allocation)",
++            os.path.basename(path),
++            len(ordered),
++            tuple(table.shape),
++            table.dtype,
++            (end - start) / 2**30,
++        )
++        return True
++
++    def _attach_int8_disk_resident_ngram_table(
++        self, offload_layers: dict[str, PleOffloadLayer]
++    ) -> bool:
++        """[FN-PLE-INT8] Back the n-gram table with INT8 + per-row bf16 scales.
++
++        Reads the offline artifacts produced by
++        /home/ll/deploy/ple-int8/quantize_ple.py:
++          <dir>/ple_ngram_int8.bin    int8      [rows, hidden]  row-major
++          <dir>/ple_ngram_scale.bin   bfloat16  [rows]
++          <dir>/ple_ngram_meta.json   geometry / provenance / checks
++
++        Both blobs are mmap'd with ACCESS_COPY, so this process never
++        materialises them in the heap; 47.7 GiB + 0.6 GiB fits fully inside
++        the 62 GiB of RAM and the whole table stops hitting the disk during
++        service.  Per-row dequantisation runs in forward_impl inside this CPU
++        worker, so the GPU contract (bf16 lookup output, same IPC buffers) is
++        byte-for-byte what the BF16 path produced.  Returns False (caller
++        falls back to the BF16 disk-resident path) whenever the artifacts are
++        absent or do not match the model geometry.
++        """
++        import json as _json
++        import mmap as _mmap
++        import os
++
++        int8_dir = envs.VLLM_PLE_INT8_DIR
++        if not int8_dir or not offload_layers:
++            return False
++        meta_path = os.path.join(int8_dir, "ple_ngram_meta.json")
++        i8_path = os.path.join(int8_dir, "ple_ngram_int8.bin")
++        sc_path = os.path.join(int8_dir, "ple_ngram_scale.bin")
++        try:
++            with open(meta_path) as probe:
++                meta = _json.load(probe)
++            rows = int(meta["rows"])
++            hidden = int(meta["hidden"])
++        except Exception as error:
++            logger.warning(
++                "[FN-PLE-INT8] no readable meta at %s (%s); falling back to BF16.",
++                meta_path,
++                error,
++            )
++            return False
++
++        embeddings = []
++        for layer in offload_layers.values():
++            embedding = getattr(layer, "ngram_embedding", None)
++            if embedding is None:
++                return False
++            if (
++                int(embedding.org_vocab_size) != rows
++                or int(embedding.embedding_dim) != hidden
++            ):
++                logger.warning(
++                    "[FN-PLE-INT8] artifact geometry rows=%d hidden=%d does not "
++                    "match embedding rows=%d hidden=%d; falling back to BF16.",
++                    rows,
++                    hidden,
++                    int(embedding.org_vocab_size),
++                    int(embedding.embedding_dim),
++                )
++                return False
++            embeddings.append(embedding)
++
++        want_i8 = rows * hidden
++        want_sc = rows * 2
++        try:
++            if (
++                os.path.getsize(i8_path) != want_i8
++                or os.path.getsize(sc_path) != want_sc
++            ):
++                logger.warning(
++                    "[FN-PLE-INT8] artifact byte sizes do not match rows*hidden; "
++                    "falling back to BF16.",
++                )
++                return False
++        except OSError:
++            return False
++
++        def _read_owned(path: str, size: int) -> bytearray:
++            """[FN-PLE-INT8MEM] 读满 size 字节到自有匿名缓冲（无 mmap、无页缓存）。"""
++            buffer = bytearray(size)
++            view = memoryview(buffer)
++            offset = 0
++            with open(path, "rb") as handle:
++                while offset < size:
++                    chunk = handle.readinto(view[offset:])
++                    if not chunk:
++                        raise EOFError(f"unexpected EOF after {offset}/{size} bytes: {path}")
++                    offset += chunk
++            return buffer
++
++        if envs.VLLM_PLE_INT8_MEMORY:
++            # [FN-PLE-INT8MEM] 内存驻留形态：48.3 GiB 匿名 RSS（不可回收、零磁盘 I/O）。
++            try:
++                i8_buffer = _read_owned(i8_path, want_i8)
++                sc_buffer = _read_owned(sc_path, want_sc)
++            except (OSError, EOFError, MemoryError) as error:
++                logger.warning(
++                    "[FN-PLE-INT8] failed to load INT8 artifacts into anonymous "
++                    "memory (%s); falling back to the BF16 heap path.",
++                    error,
++                )
++                return False
++            table = (
++                torch.frombuffer(i8_buffer, dtype=torch.uint8)
++                .view(torch.int8)
++                .view(rows, hidden)
++            )
++            scales = (
++                torch.frombuffer(sc_buffer, dtype=torch.uint8)
++                .view(torch.bfloat16)
++                .view(rows)
++            )
++            # The tensors only borrow the buffers' memory: keep every owner alive.
++            self._int8_resident_owners = (i8_buffer, sc_buffer, table, scales)
++        else:
++            i8_handle = open(i8_path, "rb")
++            # ACCESS_COPY: reads come from the page cache; a stray write would land
++            # in a private page instead of corrupting the quantized artifacts.
++            i8_map = _mmap.mmap(i8_handle.fileno(), 0, access=_mmap.ACCESS_COPY)
++            table = (
++                torch.frombuffer(i8_map, dtype=torch.uint8)
++                .view(torch.int8)
++                .view(rows, hidden)
++            )
++            sc_handle = open(sc_path, "rb")
++            sc_map = _mmap.mmap(sc_handle.fileno(), 0, access=_mmap.ACCESS_COPY)
++            scales = (
++                torch.frombuffer(sc_map, dtype=torch.uint8)
++                .view(torch.bfloat16)
++                .view(rows)
++            )
++
++            # The tensors only borrow the mappings' memory: keep every owner alive.
++            self._int8_resident_owners = (
++                i8_handle,
++                i8_map,
++                sc_handle,
++                sc_map,
++                table,
++                scales,
++            )
++        for embedding in embeddings:
++            embedding.weight = torch.nn.Parameter(table, requires_grad=False)
++            # Plain attribute (not a registered buffer): must stay CPU-resident
++            # and must never be moved by module .to() calls.
++            embedding._ple_row_scales = scales
++
++        logger.info(
++            "[FN-PLE-INT8] n-gram table attached from %s: rows=%d hidden=%d "
++            "int8=%.2f GiB + bf16 row scales=%.3f GiB (%s, "
++            "dequantised in the CPU worker)",
++            int8_dir,
++            rows,
++            hidden,
++            want_i8 / 2**30,
++            want_sc / 2**30,
++            "anonymous heap, non-reclaimable"
++            if envs.VLLM_PLE_INT8_MEMORY
++            else "mmap, zero heap",
++        )
++        return True
++
+     def accept_registrations(
+         self,
+         pull_socket: zmq.Socket,

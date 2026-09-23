@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Flash-Next watchdog every 30s
+
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=30
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

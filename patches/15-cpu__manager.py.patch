@@ -1,0 +1,17 @@
+--- a/v1/kv_offload/cpu/manager.py
++++ b/v1/kv_offload/cpu/manager.py
+@@ -302,6 +302,14 @@
+         usage = num_used / self._num_blocks if self._num_blocks > 0 else 0.0
+         stats.set_gauge(CPUOffloadingMetrics.CPU_CACHE_USAGE_PERC, usage)
+ 
++        # [local-patch kvfill] total fraction of CPU blocks holding cached data
++        fill = (
++            (self._num_allocated_blocks - len(self._free_list)) / self._num_blocks
++            if self._num_blocks > 0
++            else 0.0
++        )
++        stats.set_gauge(CPUOffloadingMetrics.CPU_CACHE_FILL_PERC, fill)
++
+         for allocation_size in self.allocation_sizes_in_current_batch:
+             stats.observe_histogram(
+                 CPUOffloadingMetrics.CPU_ALLOCATION_SIZE, allocation_size
