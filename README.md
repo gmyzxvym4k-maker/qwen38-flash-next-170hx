@@ -73,7 +73,7 @@ Qwen3.8-Flash-Next 不是普通 Transformer，它有三处"常规 vLLM 配方会
 [`docs/01`](docs/01-host-prep.md) → [`docs/02`](docs/02-image-rootfs.md) → [`docs/03`](docs/03-model.md)。
 
 ```bash
-git clone <本仓库> flashnext && cd flashnext
+git clone https://github.com/gmyzxvym4k-maker/qwen38-flash-next-170hx.git flashnext && cd flashnext
 
 # ① 打 vLLM 补丁（幂等、带 sha256 校验、可 --revert 回滚）
 sudo python3 scripts/apply-patches.py \
