@@ -8,7 +8,43 @@
  import time
  from collections import deque
  from collections.abc import Sequence
-@@ -233,6 +234,70 @@
+@@ -39,23 +40,21 @@
+     layer_refs_per_group: list[list[CanonicalKVCacheRef]],
+     gpu_to_cpu: bool,
+ ):
+-    """Resolve the swap_blocks function for a handler at init time."""
+-    # GPU->CPU is bandwidth-bound; the dedicated copy engine beats Triton.
+-    if gpu_to_cpu:
+-        return ops.swap_blocks_batch
+-    # Fall back to the C++ DMA path on platforms where Triton isn't usable
+-    # (e.g. ROCm host mappings) or where GPU kernels cannot directly
+-    # dereference CPU pointers (XPU lacks CUDA's unified virtual address space,
+-    # so the Triton kernel's tl.load(cpu_ptr) is invalid on XPU).
++    """Resolve the swap_blocks function for a handler at init time.
++
++    [local-patch kvoff-c7] 本机实锤：ops.swap_blocks_batch 的 cuMemcpyBatchAsync
++    与 PP2 NCCL-P2P 并发会冻结 compute 流（五次卡死死前 <16s 均有 store 活动；
++    09-23 同 API 入队报 error1）。两个方向统一改走 Triton 拷贝内核（SM 驱动、
++    纯流序；Gen2 x16 下 PCIe 才是带宽上限，拷贝引擎并无优势）。仅当页大小
++    非 8 字节对齐（内核按 8B 字搬运）或无 Triton 时才回落 C++ 批量路径。"""
+     if not HAS_TRITON or current_platform.is_xpu() or current_platform.is_rocm():
+         return ops.swap_blocks_batch
+     page_sizes = [r.page_size_bytes for g in layer_refs_per_group for r in g]
+-    # Triton wins only on small, 8-byte-aligned payloads.
+-    if (
+-        not page_sizes
+-        or max(page_sizes) >= THRESHOLD_BYTES
+-        or any(s % 8 for s in page_sizes)
+-    ):
++    if not page_sizes or any(s % 8 for s in page_sizes):
++        logger.warning(
++            "[kvoff-c7] page sizes not 8B-aligned or empty; falling back to "
++            "C++ batch copy (KNOWN RISK of stream stall on this stack)"
++        )
+         return ops.swap_blocks_batch
+     chunk = min(triton.next_power_of_2(max(page_sizes)), 8192)
+     return functools.partial(swap_blocks_batch, bytes_per_chunk=chunk)
+@@ -233,6 +232,70 @@
      )
  
  
@@ -79,7 +115,7 @@
  class SingleDirectionOffloadingHandler:
      """
      Handles transfers for a single direction, either CPU->GPU or GPU->CPU.
-@@ -325,6 +390,8 @@
+@@ -325,6 +388,8 @@
          self._scratch_bases_src = np.empty(num_scratch_blocks, dtype=np.uint64)
          self._scratch_bases_dst = np.empty(num_scratch_blocks, dtype=np.uint64)
  
@@ -88,7 +124,7 @@
          # job_id -> event
          self._transfer_events: dict[int, torch.Event] = {}
          # queue of transfers (job_id, stream, event)
-@@ -512,6 +579,9 @@
+@@ -512,6 +577,9 @@
      def transfer_async(
          self, job_id: int, src_spec: LoadStoreSpec, dst_spec: LoadStoreSpec
      ) -> bool:
@@ -98,7 +134,7 @@
          assert isinstance(src_spec, BlockIDsLoadStoreSpec)
          assert isinstance(dst_spec, BlockIDsLoadStoreSpec)
  
-@@ -654,12 +724,17 @@
+@@ -654,12 +722,17 @@
          with current_platform.stream(stream):
              start_event.record(stream)
              if op_idx > 0:
@@ -122,7 +158,7 @@
              end_event.record(stream)
  
          self._transfer_events[job_id] = end_event
-@@ -703,11 +778,46 @@
+@@ -703,11 +776,46 @@
              del self._transfer_events[transfer.job_id]
          return results
  
@@ -172,7 +208,7 @@
  
      def shutdown(self) -> None:
          """Drain this direction and release its transfer-side resources."""
-@@ -837,9 +947,16 @@
+@@ -837,9 +945,16 @@
      def get_finished(self) -> list[TransferResult]:
          return self._store_handler.get_finished() + self._load_handler.get_finished()
  
