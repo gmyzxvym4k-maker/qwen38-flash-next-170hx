@@ -42,7 +42,8 @@ code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "http://127.0.0.1:${P
 
 # ---- 卡死侦测（09-24 新增）：引擎卡住时 APIServer 仍回 200，普通探活看不见 ----
 STALL_MARK=/tmp/fnx-stall-caught
-if [ "$code" = "200" ]; then
+# 补丁5：卡死后 APIServer 的 /health 也会转 000（19:26 实锤），故进程活着就查
+if [ "$code" = "200" ] || vllm_alive; then
   # 窗口 400→5000 行：16:25 实锤警告距尾部 2230 行（KVOFF 调试日志+访问日志洪峰），400 行看不见；
   # 加时间校验：警告行时间戳（UTC）须在最近 6 分钟内，防旧警告滞留窗口引起误 dump。
   wline=$(tail -n 5000 "$LAUNCH_LOG" 2>/dev/null | grep -aE "No available shared memory broadcast block found in (60|[0-9]{3,}) seconds" | tail -1)
@@ -59,6 +60,9 @@ if [ "$code" = "200" ]; then
     if [ $((now-last)) -ge 90 ]; then
       echo "$now" > "$STALL_MARK"
       DD=/home/ll/deploy/stall-dumps; mkdir -p "$DD"
+      # 补丁5：GPU 侧快照（冻结时 SM/显存控制器占用是判据）
+      timeout 15 nvidia-smi --query-gpu=index,utilization.gpu,utilization.memory,power.draw \
+        --format=csv > "$DD/gpu-$(date +%m%d-%H%M%S).txt" 2>&1 || true
       for p in $(ps -eo pid,comm= 2>/dev/null | awk '/VLLM::(Worker|EngineCore)/ {print $1}'); do
         n=$(ps -o comm= -p "$p" 2>/dev/null | tr -d ':')
         f="$DD/stall-$(date +%m%d-%H%M%S)-$p-$n.txt"
@@ -76,6 +80,11 @@ if [ "$code" = "200" ]; then
             cat "/proc/$p/stack" 2>/dev/null
           } > "$f" 2>&1
         fi
+        # 补丁5：附内核栈与 wchan（py-spy 只见 Python 帧，native 阻塞点看这里）
+        { echo "--- kernel stack ---"
+          echo 3124 | sudo -S -p '' cat /proc/$p/stack 2>/dev/null
+          echo "--- wchan ---"; cat /proc/$p/wchan 2>/dev/null; echo
+        } >> "$f"
         [ -s "$f" ] && log "卡死取证: pid=$p -> $(basename "$f")（$(wc -c < "$f") 字节）"
       done
     fi
