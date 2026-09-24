@@ -20,11 +20,11 @@ sudo python3 scripts/apply-patches.py --target <同上> --revert
 | **A. PP>1 解禁** | 05 07 08 09 18 20 21 22 | 让 `PP2 + MTP + PLE CPU offload` 三者同开 | 启动即失败，或首个请求乱码/崩溃 |
 | **B. PLE 表驻留形态** | 06 10 19 | 磁盘驻留 / INT8 / 内存堆四态 | 只能按手册要 128 GB 内存常驻 BF16 |
 | **C. MTP 并行校验** | 01 | 草稿模型不按 PP 段校验 | 启动即失败 |
-| **D. KV 二级缓存** | 02 03 04 13 14 15 16 | `OffloadingConnector` 在本栈可用 | `FN_KVOFF=1` 时启动或首请求必挂 |
+| **D. KV 二级缓存** | 02 03 04 13 14 15 16 23 24 | `OffloadingConnector` 在本栈可用 | `FN_KVOFF=1` 时启动或首请求必挂 |
 | **E. 提速与观测** | 11 12 17 | 跳过多模态 warmup、每请求实时进度 | 只是慢 33 s / 仪表盘无数据，**不影响可用性** |
 
 > A+B+C 是本仓库生产实例的**必需集**（9 + 3 + 1 = 13 个）。
-> D 组 7 个只在开 `FN_KVOFF=1` 时需要；关掉二级缓存时它们存在也无害。
+> D 组 9 个只在开 `FN_KVOFF=1` 时需要；关掉二级缓存时它们存在也无害。
 > E 组 3 个纯优化。
 
 ---
@@ -186,7 +186,7 @@ self.draft_model_config.verify_with_parallel_config(draft_parallel_config)
 
 ---
 
-## D 组 · KV 二级缓存（7 个，仅 `FN_KVOFF=1` 需要）
+## D 组 · KV 二级缓存（9 个，仅 `FN_KVOFF=1` 需要）
 
 vLLM 自带 `OffloadingConnector`（GPU KV → 宿主内存），默认关闭。本栈开不起来不是功能缺失，而是上游几处假设与"混合架构 + PP2"冲突。
 
@@ -198,6 +198,8 @@ vLLM 自带 `OffloadingConnector`（GPU KV → 宿主内存），默认关闭。
 | 03 | `offloading/metrics.py` | **首个请求即 HTTP 500**：`assert key in self._offloading_metric_defs`（`observe()` 在每请求 record 路径上，确定性炸） | 未知 key 降级为"丢弃 + 一次性 warning"，不再 assert |
 | 14 | `v1/kv_offload/cpu/gpu_worker.py` | 抢占换出时 `cuMemcpyBatchAsync failed at index 8 with error 1` → Worker_PP1 死 → EngineDead，只知道第 8 个块失败 | 加 `_kvoff_c3_ranges/_kvoff_c3_dump_failed_batch`：崩溃前把每个块的 src/dst 地址区间、是否落在已注册缓冲内 dump 出来再原样上抛 |
 | 13 / 15 | `cpu/common.py`、`cpu/manager.py` | 只有 `..._usage_perc`（在途传输占比），看不出档位到底有没有被填 | 新增 `vllm:kv_offload_cpu_cache_fill_perc` = 已分配块/总块 |
+| 23 | `offloading/common.py` | c6 协议缺口：worker 侧失败无法告知 scheduler | `OffloadingWorkerMetadata` 增 `failed_jobs`/`fuse_tripped` 字段与 `mark_failed()`，`aggregate()` 合并两者（fuse 取或） |
+| 24 | `offloading/worker.py` | 提交异常直接炸穿 execute_model 杀 Worker（09-23 崩溃路径）；卡死时主线程无限阻塞（09-24 卡死路径） | c6：提交循环改 `_submit_stores()` 带 try/except，异常/返回 False/等待超时 → 失败 ack + store 熔断；`get_finished` 对已失败 job 去重（迟到完成不双计）；scheduler 收到 `fuse_tripped` 后停止生成新 store 任务=只读降级（已有条目继续命中） |
 
 > ⚠️ **诚实的现状说明**：D 组把"能不能开、会不会炸、命中不命中"三层都修通了，但**该功能仍属高风险**。
 > 已知未解：PP2 下超长请求把 KV 顶到 ~89% 触发 preemption 时，`submit_store → swap_blocks_batch` 会报
@@ -236,7 +238,7 @@ if os.environ.get("VLLM_SKIP_MM_WARMUP", "") == "1":
 | `[kvoff-c3] offloading stats key without metric def (dropped): ...` | 补丁 03 生效（旧版此处是 AssertionError） |
 | `warmup skipped (VLLM_SKIP_MM_WARMUP=1)` | 补丁 11 生效 |
 | `grep -c 'prefill_progress' .../v1/core/sched/scheduler.py` ≥ 1 | 补丁 12 生效 |
-| `python3 scripts/apply-patches.py --check` 全 `patched` | **22 个补丁与仓库逐字节一致**（最可靠） |
+| `python3 scripts/apply-patches.py --check` 全 `patched` | **24 个补丁与仓库逐字节一致**（最可靠） |
 
 > **改完 `.py` 必须删 `__pycache__`**（`apply-patches.py` 已自动处理）。
 > 症状：加了日志一行都不出——因为加载的是旧 `.pyc`。手工清理：
