@@ -1,0 +1,21 @@
+--- a/v1/kv_offload/cpu/swap_blocks_triton.py
++++ b/v1/kv_offload/cpu/swap_blocks_triton.py
+@@ -56,15 +56,9 @@
+ ) -> None:
+     """Triton implementation of ``swap_blocks_batch`` for small CPU->GPU batches."""
+     n = src_addrs.numel()
+-    # Too few descriptors to amortize Triton's launch cost.
+-    if n < MIN_N:
+-        ops.swap_blocks_batch(
+-            src_addrs,
+-            dst_addrs,
+-            sizes,
+-            is_src_access_order_any=is_src_access_order_any,
+-        )
+-        return
++    # [local-patch kvoff-c7] 原版 n<MIN_N 回落 C++ 批量拷贝；该 API 在本机
++    # 与 PP2 NCCL-P2P 并发会冻结流（见 gpu_worker.py c7 注释），故小批量也走
++    # Triton（仅多一次 launch 开销，Correctness/存活优先）。
+     _swap_blocks_kernel[(min(NUM_SMS, n),)](
+         src_addrs.to("cuda", non_blocking=True),
+         dst_addrs.to("cuda", non_blocking=True),
