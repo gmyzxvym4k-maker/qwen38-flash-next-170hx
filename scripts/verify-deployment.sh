@@ -74,7 +74,7 @@ if [ -d "$VLLM_DIR" ]; then
   OUT=$(python3 "$REPO/scripts/apply-patches.py" --target "$VLLM_DIR" --check 2>&1)
   NP=$(echo "$OUT" | grep -c "patched ")
   NU=$(echo "$OUT" | grep -cE "pristine |UNKNOWN |✗")
-  ck "补丁数（22 个全部 patched）" "22" "$NP"
+  ck "补丁数（24 个全部 patched）" "24" "$NP"
   [ "$NU" != "0" ] && printf '  \033[31m✗\033[0m 未达期望状态 %d 个：\n%s\n' "$NU" "$(echo "$OUT"|grep -E 'pristine |UNKNOWN |✗'|head -5)"
   FAIL=$((FAIL+NU))
   VER=$(SUDO chroot "$ROOT/rootfs" /usr/bin/python3.12 -c 'import vllm;print(vllm.__version__)' 2>/dev/null)

@@ -1,0 +1,37 @@
+--- a/distributed/kv_transfer/kv_connector/v1/offloading/common.py
++++ b/distributed/kv_transfer/kv_connector/v1/offloading/common.py
+@@ -83,12 +83,19 @@
+     """
+ 
+     completed_jobs: dict[int, int] = field(default_factory=dict)
++    # [local-patch kvoff-c6] 失败 ack（store 熔断/提交异常）与熔断标志
++    failed_jobs: dict[int, int] = field(default_factory=dict)
++    fuse_tripped: bool = False
+     transfer_stats: TransferStats = field(default_factory=TransferStats)
+ 
+     def mark_completed(self, job_id: int) -> None:
+         """Record a transfer job completion from this worker."""
+         self.completed_jobs[job_id] = 1
+ 
++    def mark_failed(self, job_id: int) -> None:
++        """[local-patch kvoff-c6] Record a failed transfer job from this worker."""
++        self.failed_jobs[job_id] = 1
++
+     def aggregate(
+         self, other: "KVConnectorWorkerMetadata"
+     ) -> "KVConnectorWorkerMetadata":
+@@ -98,7 +105,14 @@
+         for job_id, v in other.completed_jobs.items():
+             merged[job_id] = merged.get(job_id, 0) + v
+ 
++        # [local-patch kvoff-c6]
++        merged_failed = dict(self.failed_jobs)
++        for job_id, v in other.failed_jobs.items():
++            merged_failed[job_id] = merged_failed.get(job_id, 0) + v
++
+         return OffloadingWorkerMetadata(
+             completed_jobs=merged,
++            failed_jobs=merged_failed,
++            fuse_tripped=self.fuse_tripped or other.fuse_tripped,
+             transfer_stats=self.transfer_stats.aggregate(other.transfer_stats),
+         )
