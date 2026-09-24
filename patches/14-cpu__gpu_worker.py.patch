@@ -1,6 +1,14 @@
 --- a/v1/kv_offload/cpu/gpu_worker.py
 +++ b/v1/kv_offload/cpu/gpu_worker.py
-@@ -233,6 +233,70 @@
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ import functools
++import os
+ import time
+ from collections import deque
+ from collections.abc import Sequence
+@@ -233,6 +234,70 @@
      )
  
  
@@ -71,7 +79,26 @@
  class SingleDirectionOffloadingHandler:
      """
      Handles transfers for a single direction, either CPU->GPU or GPU->CPU.
-@@ -654,12 +718,17 @@
+@@ -325,6 +390,8 @@
+         self._scratch_bases_src = np.empty(num_scratch_blocks, dtype=np.uint64)
+         self._scratch_bases_dst = np.empty(num_scratch_blocks, dtype=np.uint64)
+ 
++        # [local-patch kvoff-c6] store 方向熔断标志（见 wait/transfer_async）
++        self._stalled = False
+         # job_id -> event
+         self._transfer_events: dict[int, torch.Event] = {}
+         # queue of transfers (job_id, stream, event)
+@@ -512,6 +579,9 @@
+     def transfer_async(
+         self, job_id: int, src_spec: LoadStoreSpec, dst_spec: LoadStoreSpec
+     ) -> bool:
++        if self._stalled:
++            # [local-patch kvoff-c6] 熔断后不再入队，由 connector 走失败 ack
++            return False
+         assert isinstance(src_spec, BlockIDsLoadStoreSpec)
+         assert isinstance(dst_spec, BlockIDsLoadStoreSpec)
+ 
+@@ -654,12 +724,17 @@
          with current_platform.stream(stream):
              start_event.record(stream)
              if op_idx > 0:
@@ -95,3 +122,72 @@
              end_event.record(stream)
  
          self._transfer_events[job_id] = end_event
+@@ -703,11 +778,46 @@
+             del self._transfer_events[transfer.job_id]
+         return results
+ 
+-    def wait(self, job_ids: set[int]):
++    def wait(self, job_ids: set[int]) -> set[int]:
++        """[local-patch kvoff-c6] 有界等待，返回超时未完成的 job 集合。
++
++        原版 event.synchronize() 无限阻塞主线程：PP2 下 flush store 的流链
++        wait_stream(compute)，compute 流含跨 rank NCCL 中继，对端主线程同样
++        阻塞在自己的 wait() → 互等成环（09-24 三次卡死实锤）。有界轮询拆开
++        环路；超时则熔断本方向并交由 connector 失败降级。"""
++        if self._stalled:
++            return set(self._transfer_events.keys())
++        timeout = float(os.environ.get("FN_KVOFF_WAIT_TIMEOUT", "15"))
++        deadline = time.monotonic() + timeout
+         for job_id in job_ids:
+             event = self._transfer_events.get(job_id)
+-            if event is not None:
+-                event.synchronize()
++            if event is None:
++                continue
++            while not event.query():
++                if time.monotonic() >= deadline:
++                    self._fuse_with_forensics(job_id, timeout)
++                    return set(self._transfer_events.keys())
++                time.sleep(0.002)
++        return set()
++
++    def _fuse_with_forensics(self, stuck_job_id: int, timeout: float) -> None:
++        """[local-patch kvoff-c6] 熔断 + 现场取证（链深/队头/字节数）。"""
++        self._stalled = True
++        try:
++            head = self._transfers[0] if self._transfers else None
++            logger.error(
++                "[kvoff-c6] FUSE: %s job=%s 未在 %.1fs 内完成 -> 本方向熔断；"
++                "chain_len=%d head_job=%s head_bytes=%d pending=%d",
++                "GPU->CPU" if self.gpu_to_cpu else "CPU->GPU",
++                stuck_job_id,
++                timeout,
++                len(self._transfers),
++                head.job_id if head else None,
++                head.num_bytes if head else 0,
++                len(self._transfer_events),
++            )
++        except Exception:  # noqa: BLE001
++            logger.exception("[kvoff-c6] fuse forensics failed")
+ 
+     def shutdown(self) -> None:
+         """Drain this direction and release its transfer-side resources."""
+@@ -837,9 +947,16 @@
+     def get_finished(self) -> list[TransferResult]:
+         return self._store_handler.get_finished() + self._load_handler.get_finished()
+ 
+-    def wait(self, job_ids: set[int]) -> None:
+-        self._store_handler.wait(job_ids)
++    def wait(self, job_ids: set[int]) -> set[int]:
++        # [local-patch kvoff-c6] jobs_to_flush 恒为 store（scheduler assert is_store），
++        # load 侧 wait 找不到对应事件、天然 no-op。
++        unfinished = self._store_handler.wait(job_ids)
+         self._load_handler.wait(job_ids)
++        return unfinished
++
++    def inflight_store_job_ids(self) -> set[int]:
++        """[local-patch kvoff-c6] 当前在 store 链上未完成的 job 集合。"""
++        return set(self._store_handler._transfer_events.keys())
+ 
+     def shutdown(self) -> None:
+         handler_failed = False

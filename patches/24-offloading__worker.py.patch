@@ -1,0 +1,128 @@
+--- a/distributed/kv_transfer/kv_connector/v1/offloading/worker.py
++++ b/distributed/kv_transfer/kv_connector/v1/offloading/worker.py
+@@ -62,6 +62,9 @@
+             tuple[int, GPULoadStoreSpec, LoadStoreSpec]
+         ] = []
+         self._connector_worker_meta = OffloadingWorkerMetadata()
++        # [local-patch kvoff-c6] store 熔断状态与失败去重集合
++        self._store_fused = False
++        self._failed_jobs: set[int] = set()
+ 
+     def _init_worker(self, kv_caches: CanonicalKVCaches) -> None:
+         self.worker = self.spec.get_worker(kv_caches)
+@@ -307,21 +310,17 @@
+                     )
+ 
+         # Submit deferred stores from previous step (and jobs_to_flush above).
+-        for job_id, src_spec, dst_spec in self._unsubmitted_store_jobs:
+-            assert isinstance(src_spec, GPULoadStoreSpec)
+-            success = self.worker.submit_store(job_id, src_spec, dst_spec)
+-            assert success
+-        self._unsubmitted_store_jobs.clear()
++        self._submit_stores()  # [local-patch kvoff-c6]
+ 
+         if kv_connector_metadata.jobs_to_flush:
+-            self.worker.wait(kv_connector_metadata.jobs_to_flush)
++            # [local-patch kvoff-c6] 有界等待：超时集合走失败 ack + 熔断
++            unfinished = self.worker.wait(kv_connector_metadata.jobs_to_flush)
++            if unfinished:
++                self._trip_store_fuse(extra_failed=set(unfinished))
+ 
+     def start_kv_transfers(self, metadata: OffloadingConnectorMetadata):
+         assert self.worker is not None
+-        for job_id, src_spec, dst_spec in self._unsubmitted_store_jobs:
+-            success = self.worker.submit_store(job_id, src_spec, dst_spec)
+-            assert success
+-        self._unsubmitted_store_jobs.clear()
++        self._submit_stores()  # [local-patch kvoff-c6]
+ 
+         for job_id, entry in metadata.load_jobs.items():
+             self._load_jobs[job_id] = entry.req_id
+@@ -329,8 +328,62 @@
+             success = self.worker.submit_load(job_id, entry.src_spec, entry.dst_spec)
+             assert success
+ 
++    # ------------------------------------------------------------------ #
++    # [local-patch kvoff-c6] store 提交与熔断降级
++    # ------------------------------------------------------------------ #
++    def _submit_stores(self) -> None:
++        if not self._unsubmitted_store_jobs:
++            return
++        pending = self._unsubmitted_store_jobs
++        self._unsubmitted_store_jobs = []
++        for job_id, src_spec, dst_spec in pending:
++            assert isinstance(src_spec, GPULoadStoreSpec)
++            if self._store_fused:
++                self._fail_store_job(job_id)
++                continue
++            try:
++                success = self.worker.submit_store(job_id, src_spec, dst_spec)
++            except Exception:  # noqa: BLE001
++                # 09-23 实锤：cuMemcpyBatchAsync 入队即抛 error1 → 原版直接
++                # 炸穿 execute_model 杀死 worker；现改为熔断降级。
++                logger.exception("[kvoff-c6] submit_store raised, job=%s", job_id)
++                self._trip_store_fuse(extra_failed={job_id})
++                continue
++            if not success:
++                self._fail_store_job(job_id)
++
++    def _fail_store_job(self, job_id: int) -> None:
++        if job_id in self._failed_jobs:
++            return
++        self._failed_jobs.add(job_id)
++        self._connector_worker_meta.mark_failed(job_id)
++
++    def _trip_store_fuse(self, extra_failed: set[int] | None = None) -> None:
++        if not self._store_fused:
++            self._store_fused = True
++            logger.error(
++                "[kvoff-c6] KVOFF store 熔断触发：CPU 二级缓存转入只读降级"
++                "（不再存新块，已有条目仍可命中；重启实例可恢复写入）"
++            )
++        if self.worker is not None:
++            getter = getattr(self.worker, "inflight_store_job_ids", None)
++            if getter is not None:
++                for jid in getter():
++                    self._fail_store_job(jid)
++        for jid, _s, _d in self._unsubmitted_store_jobs:
++            self._fail_store_job(jid)
++        self._unsubmitted_store_jobs = []
++        if extra_failed:
++            for jid in extra_failed:
++                self._fail_store_job(jid)
++        self._connector_worker_meta.fuse_tripped = True
++
+     def prepare_store_kv(self, metadata: OffloadingConnectorMetadata):
+         for job_id, entry in metadata.store_jobs.items():
++            if self._store_fused:
++                # [local-patch kvoff-c6] 熔断后到达的新任务直接失败 ack
++                self._fail_store_job(job_id)
++                continue
+             if not self._is_store_writer:
+                 # Gate before queueing: no _unsubmitted_store_jobs entry.
+                 self._connector_worker_meta.mark_completed(job_id)
+@@ -356,8 +409,12 @@
+         assert self.worker is not None
+         finished_recving: set[str] = set()
+         for transfer_result in self.worker.get_finished():
+-            # we currently do not support job failures
+             job_id = transfer_result.job_id
++            if job_id in self._failed_jobs:
++                # [local-patch kvoff-c6] 熔断前入队的传输迟到完成：
++                # 失败已 ack，跳过避免 scheduler 双计（pending_count 变负）。
++                self._failed_jobs.discard(job_id)
++                continue
+             assert transfer_result.success
+             is_load = job_id in self._load_jobs
+             if (
+@@ -382,7 +439,9 @@
+ 
+     def build_connector_worker_meta(self) -> OffloadingWorkerMetadata | None:
+         """Return completed transfer job IDs since the last call."""
+-        if not self._connector_worker_meta.completed_jobs:
++        m = self._connector_worker_meta
++        # [local-patch kvoff-c6] failed/fuse 也要及时回传
++        if not (m.completed_jobs or m.failed_jobs or m.fuse_tripped):
+             return None
+         meta = self._connector_worker_meta
+         self._connector_worker_meta = OffloadingWorkerMetadata()
