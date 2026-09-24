@@ -1,14 +1,4 @@
 #!/bin/bash
-# ---- sudo 凭据（脱敏版）----
-# 生产机上 chroot 内进程属 root，宿主脚本需要 sudo。两种给法二选一：
-#   A) 推荐：/etc/sudoers.d/ 配 NOPASSWD（见 docs/01-host-prep.md），无需本变量
-#   B) 环境变量 SUDO_PASS 传入密码（不落盘、不写进脚本）
-if [ -n "${SUDO_PASS:-}" ]; then
-  SUDO() { printf '%s\n' "$SUDO_PASS" | sudo -S -p '' "$@"; }
-else
-  SUDO() { sudo -n "$@"; }
-fi
-
 # chroot 内启动 Qwen3.8-Flash-Next W4A16-AutoRound —— gavinxym/170hx-2 手册方案（2026-09-15）
 #
 # 依据：github.com/gavinxym/170hx-2-qwen3.8-flash-next（W4A16-AutoRound 档位手册）：
@@ -247,10 +237,13 @@ esac
 # store_threshold=2：只存被查过≥2 次的块（write_back 类比，防一次性文档冲刷档位——
 # 参照 ChinaBoy0618/170hx 仓库 v1.0.0 write_through→write_back 的演进经验）。
 # 回滚：FN_KVOFF=0；调容量：FN_KVOFF_BYTES=<字节数>
-if [ "${FN_KVOFF:-1}" = "1" ]; then
+if [ "${FN_KVOFF:-0}" = "1" ]; then  # 0924 卡死实锤后缺省关（三次 hang 死均紧跟 KVOFF store/load）
   KVOFF_BYTES="${FN_KVOFF_BYTES:-103079215104}"
-  ARGS+=(--kv-transfer-config "{\"kv_connector\":\"OffloadingConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"cpu_bytes_to_use\":${KVOFF_BYTES},\"store_threshold\":2}}")
-  echo "[FN-KVOFF] CPU KV 二级缓存：cpu_bytes_to_use=${KVOFF_BYTES} (96 GiB), store_threshold=2" >&2
+  # store_threshold 教训（09-24 定案）：=2 对本机「增长型多轮对话」负载是毒药——
+  # _maximal_prefix_lookup 首个 miss 即 break，frontier 每轮前进，每块一生只被查 1 次，
+  # count 永达不到 2 → 档位饿死（7.8h 仅存 27%，8181 次 LOOKUP 全 0）。保持首见即存。
+  ARGS+=(--kv-transfer-config "{\"kv_connector\":\"OffloadingConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"cpu_bytes_to_use\":${KVOFF_BYTES}}}")
+  echo "[FN-KVOFF] CPU KV 二级缓存：cpu_bytes_to_use=${KVOFF_BYTES} (96 GiB)" >&2
 fi
 
 if [ "${FN_DRY_RUN:-0}" = "1" ]; then
