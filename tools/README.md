@@ -39,3 +39,9 @@ FN_DRY_RUN=1 FN_ENVFILE=/dev/null bash scripts/flash-next-w4a16-inner.sh
 **两个已知的等价差异**（对账时不要误判）：
 - `FN_ASYNC=0` 与"未下发"行为等价（inner 判据是 `[ "${FN_ASYNC:-0}" = "1" ]`）；
 - dry-run 输出的 JSON 被 shell 解析后引号形态可能不同，要**两侧引号归一**后再比。
+
+## 非快照件：运维补丁脚本
+
+| 文件 | 用途 | 校验 |
+|---|---|---|
+| `patch-kvoff-default-off-0929.py` | 把 8889 控制台三源（server.js SCRIPT_MODELS base/fallback、index.html 弹窗缺省）的 KVOFF 翻为默认关；幂等、`--revert` 回滚、`node --check` 语法门禁+失败自动回滚 | `python3 tools/patch-kvoff-default-off-0929.py --check` |

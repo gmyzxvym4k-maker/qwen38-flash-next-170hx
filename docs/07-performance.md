@@ -91,3 +91,26 @@ python3 scripts/bench-fnx.py 131072 256 --url http://<部署机>:18420/v1
 - 客户端看到的 `cached_tokens` 需要 `--enable-prompt-tokens-details`，否则恒 `null`（P23）。
 - 前缀缓存有两个固有折扣（异步提交 ~20 s + 每请求末块 ≤1616 token 永不写入，P24）——
   所以"重发只命中 90%"是正常的，不要当成故障去调参。
+
+## 7. 2026-09-29 定案：YaRN 无罪与 KVOFF 退役（同协议补测）
+
+**背景**：参考机（18432 路线，stock vLLM 0.30.0）自报 MTP 接受率 65.7%，本机长期 ~30%。头号嫌疑 = YaRN×4（1M 副本）压低接受率。
+
+**A/B（同协议：32K prompt ×3、生成 512 token、temperature=0、丢弃冷样本）**
+
+| 档位 | decode 中位 | 接受长度 | 逐位接受率 |
+|---|---|---|---|
+| 1M YaRN×4（block1680/K5） | 93.7 tok/s | 2.51 | 30.2% |
+| 原生 262144（同 K5，KVOFF=0） | 97.4 tok/s | 2.53 | 30.5% |
+
+**结论**：
+1. **YaRN 无罪** —— 接受率差在噪声内，1M 上下文对投机几乎零代价，保留 1M 档。
+   参考机 65.7% 属 **prompt 协议差异**（说明文/复述型天然偏高）；跨机接受率不对齐 prompt 构造与 temperature 不可比。
+2. **KVOFF 退役** —— 生产 21.5 h `external_prefix_cache_hits_total=0`（GPU 前缀缓存自给 ~90% 命中），
+   代价是钉 ~107 GiB 物理内存，外加 PP2 拷贝路径两种故障模式（09-23 抢占崩 / 09-24 卡死）。
+   三处缺省（inner 脚本、server.js base+fallback、index.html 弹窗）已全部翻为**关**，
+   补丁脚本 `tools/patch-kvoff-default-off-0929.py`（幂等、`--revert` 可回滚、`node --check` 门禁）。
+   复活条件：再现超出 GPU 池（1.19M token）的长多轮重发；开启时遵守 09-23 组合（PLE heap、不 drop_caches、容量 ≥ GPU 池）。
+3. **PLE 精度统一** —— envfile 曾漂移 BF16+heap，三源缺省为 INT8+heap（49.2 GiB 不可回收 vs 95.4 GiB，decode 实测持平）。
+   已统一 INT8+heap；产物不随仓库分发，用 `python3 scripts/quantize_ple.py --model <W4A16目录> --out /media/ll/data/ple`
+   再生（约 10 分钟，可断点续传，`--verify-only` 做字节级自检）。
