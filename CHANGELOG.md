@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-05 — KV 二级缓存移植回官方 0.30.0 新栈（rt-patch #9）
+
+- 背景：2026-09-26 生产接管方已迁至官方 vLLM 0.30.0（宿主 venv + PYTHONPATH 运行时补丁，
+  site-packages 零改动；操作文档在机器 `/home/ll/deploy/vllm-0300/README-0300.md`，
+  本仓库 `stack-0300/` 收录其关键脚本与补丁产物，脚本已脱敏为 SUDO_PASS 注入）。
+- **恢复功能不恢复缺省**：`patches-extra/dsh_kvoff_rt.py` 把旧栈 D 组验证过的
+  c1（QSA 环形/空占位分组源头过滤）、c2（PP>1 私有 pinned）、c6（有界等待 + store 熔断
+  只读降级 + 失败 ack 走 complete_store(success=False)）、c7（双向强制 Triton swap，
+  绕开 cuMemcpyBatchAsync×PP2 NCCL-P2P 冻结流）移植为运行时钩子；c3/c5a/13/15 经源码
+  核对确认已被上游吸收或不再触发。FN_KVOFF 缺省仍为 0，未配 connector 时钩子天然惰性。
+- 验证：离线自检 24 项全绿（`stack-0300/selftest_kvoff_rt.py`）；inner 四态 dry-run
+  正确。**未做 FN_KVOFF=1 实机验证窗口**（需停机 ~8 min，使用者择时执行）。
+
+
 ## 2026-09-29 — 生产收口（三场定案，脚本与文档增量同步）
 
 - **KVOFF（CPU KV 二级缓存）正式退役**：生产 21.5 h `external_prefix_cache_hits_total=0`、物理钉住 ≈107 GiB、
