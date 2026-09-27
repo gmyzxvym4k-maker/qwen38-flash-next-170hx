@@ -17,6 +17,7 @@
 """
 import argparse
 import json
+import os
 import random
 import re
 import string
@@ -108,6 +109,21 @@ def calibrate_ratio(endpoint, model):
     return pt / n
 
 
+def gpu_pool_tokens(base):
+    """从 /metrics 的 cache_config_info 里取 kv_cache_size_tokens。"""
+    murl = re.sub(r"/v1/?$", "", base) + "/metrics"
+    try:
+        with urllib.request.urlopen(murl, timeout=20) as r:
+            for line in r.read().decode().splitlines():
+                if "kv_cache_size_tokens" in line and "cache_config_info" in line:
+                    m = re.search(r'kv_cache_size_tokens="(\d+)"', line)
+                    if m:
+                        return int(m.group(1))
+    except Exception:
+        pass
+    return None
+
+
 def make_doc(idx, tokens, ratio, rng):
     """构造约 tokens 个 token 的自然文本，内嵌唯一验证码。"""
     code = "".join(rng.choice(string.ascii_uppercase + string.digits) for _ in range(7))
@@ -153,6 +169,15 @@ def main():
                          "文档从显存挤出去；同时 建档+挤池 总量必须 < CPU 档容量"
                          "（48 GiB≈160 万 tok），否则 CPU 侧也被 LRU 掉 = 必 miss")
     ap.add_argument("--gap", type=float, default=5.0, help="请求间隔秒")
+    ap.add_argument("--answer-tokens", type=int, default=1024,
+                    help="问答预算：本模型是思考模型，预算给小会被思考吃满、"
+                         "正文空 → 复述判定假阴性（09-27 实测 256 不够）")
+    ap.add_argument("--calib-tokens", type=int, default=20000,
+                    help="容量自标定用的全新文档 token 数；0=跳过标定")
+    ap.add_argument("--shm-baseline-mb", type=float, default=248.0,
+                    help="/dev/shm 非本区域占用（基线），用于反推共享区字节数")
+    ap.add_argument("--auto", type=int, default=1,
+                    help="1=按标定结果自动选建档/挤池规模（推荐）；0=用命令行给的")
     args = ap.parse_args()
 
     rng = random.Random(20260927)
@@ -168,6 +193,79 @@ def main():
 
     m0 = snap()
     b0 = offload_bytes_labeled(args.endpoint)
+
+    # ---- 容量自标定：CPU 档每 token 占多少字节、要装下 GPU 池得配多大 ----
+    pool = gpu_pool_tokens(args.endpoint)
+    if args.calib_tokens > 0:
+        cu0 = m0.get("vllm:kv_offload_cpu_cache_usage_perc", 0.0)
+        cb0 = offload_bytes_labeled(args.endpoint)["GPU_to_CPU"]
+        _, cdoc = make_doc(9999, args.calib_tokens, args.ratio, rng)
+        ask(args.endpoint, args.model, cdoc, "Reply OK.", max_tokens=4)
+        import time as _t
+        _t.sleep(max(6.0, args.gap))
+        mc = snap()
+        cb1 = offload_bytes_labeled(args.endpoint)["GPU_to_CPU"]
+        d_store = cb1 - cb0
+        d_usage = mc.get("vllm:kv_offload_cpu_cache_usage_perc", 0.0) - cu0
+        # 只算真正落盘的 token（最后不足一个 chunk 的部分不算）：粗估按 85%
+        stored_tok = max(1.0, args.calib_tokens * 0.85)
+        bpt = d_store / stored_tok
+        out["calibration"] = {
+            "calib_prompt_tokens": args.calib_tokens,
+            "delta_store_bytes": d_store,
+            "delta_usage_perc": d_usage,
+            "cpu_bytes_per_token_est": round(bpt, 1),
+            "gpu_pool_tokens": pool,
+            "gib_needed_to_beat_pool": (
+                round((pool * 1.15) * bpt / 2**30, 1) if pool else None),
+        }
+        if pool and d_store > 0:
+            need_gib = (pool * 1.15 + args.docs * args.tokens) * bpt / 2**30
+            out["calibration"]["gib_needed_with_build_docs"] = round(need_gib, 1)
+            out["calibration"]["note"] = (
+                "若 config < 该值，本轮挤池必然把建档文档从 CPU 侧 LRU 掉 ⇒ 回载必 miss，"
+                "属探针容量配置问题而非 c8 缺陷")
+            # ---- 实测 CPU 档容量，并自动选规模（P+B < F <= C-B）----
+            try:
+                st = os.statvfs("/dev/shm")
+                shm_used = (st.f_blocks - st.f_bfree) * st.f_frsize
+                region = max(0, shm_used - int(args.shm_baseline_mb * 1e6))
+                # 容量优先用 usage_perc 标定：C = 标定token / Δusage。
+                # 字节法（region/bpt）会高估——实测 offload 给每个 chunk 预留的 slot
+                # 远大于实际写入的 KV（90MB/块 vs 实际 ≈25MB/块），区域里大量是空洞。
+                if d_usage > 0.004:
+                    C = args.calib_tokens / d_usage
+                    out["calibration"]["capacity_method"] = "usage_perc"
+                else:
+                    C = region / bpt if bpt > 0 else 0
+                    out["calibration"]["capacity_method"] = "bytes(高估,Δusage过小)"
+                out["calibration"]["shm_used_bytes"] = shm_used
+                out["calibration"]["region_bytes_est"] = region
+                out["calibration"]["cpu_capacity_tokens_est"] = int(C)
+                if args.auto and C > 0:
+                    B = int((C - pool) / 2.6)
+                    B = max(60000, min(B, 200000, args.tokens))
+                    Fmax = int(C - B)
+                    F = int(min(Fmax, pool + B + max(int(0.12 * pool), 60000)))
+                    nflush = max(1, int(round(F / B)))
+                    out["calibration"]["auto_plan"] = {
+                        "doc_tokens": B, "flush_docs": nflush,
+                        "flush_tokens": B * nflush,
+                        "gpu_pool": pool,
+                        "ok_gpu_evicts_build": (B * nflush) > (pool + B),
+                        "ok_cpu_keeps_build": (B * nflush + B) <= C,
+                    }
+                    _msg = ("[probe] 标定：bpt=%.1f B/token（%s）C=%.2fM token "
+                            "P=%.2fM → 建档 %d tok + 挤池 %d × %d tok（挤池 %.2fM）"
+                            % (bpt, out["calibration"]["capacity_method"], C / 1e6,
+                               pool / 1e6, B, nflush, B, B * nflush / 1e6))
+                    print(_msg, file=sys.stderr, flush=True)
+                    print(_msg, flush=True)
+                    args.tokens = B
+                    args.flush = nflush
+            except Exception as exc:
+                print("[probe] 自适应选参失败，用命令行参数：%s" % exc,
+                      file=sys.stderr, flush=True)
 
     # 1) 建档：发 docs 篇长文档（触发 GPU→CPU store）
     docs = []
@@ -200,7 +298,7 @@ def main():
     code, doc, q, _ = docs[0]
     m1 = snap()
     b1 = offload_bytes_labeled(args.endpoint)
-    r = ask(args.endpoint, args.model, doc, q, max_tokens=256)
+    r = ask(args.endpoint, args.model, doc, q, max_tokens=args.answer_tokens)
     m2 = snap()
     b2 = offload_bytes_labeled(args.endpoint)
     out["detail"].append({"phase": "reload", "code": code,

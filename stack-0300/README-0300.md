@@ -340,18 +340,89 @@ worker 在 `/dev/shm/vllm_kvoff_slot.<engine_id>.r<rank>.json` 发布自己的�
   区段不相交、双 rank 打开同一 region 的字节可见性、喂给上游 `compute_sub_block_ptrs` 的
   逐指针断言、调度器/worker 口径一致、四类门控退回私有、死进程陈旧文件被忽略、
   `/dev/shm` 不足退回私有、混合决策取 min、区段溢出被断言拦住。
-- **实机窗口未跑**（需停机 8~10 min，会中断 18420 上所有会话）：
-  `SUDO_PASS=**** bash /home/ll/deploy/kvoff-c8-window.sh`
-  自动做：停看门狗 → 优雅停 → `FN_KVOFF=1 FN_KVOFF_SHARED=1` 原样重启 → 12 项判据
-  （含 `df --output=used /dev/shm` ≈ 配置值这条物理判据）→ `kvoff-c8-probe.py` 做
-  「建档 2×100k → 挤池 11×100k（>GPU 池）→ 重发」并断言
-  `external_prefix_cache_hits_total` 增量 > 0 **且** `CPU_to_GPU` 字节 > 0 **且** 验证码精准复述
-  → 零新增 Xid 复查；任一硬失败自动回滚成 `FN_KVOFF=0` 生产态。
-- 仍未定论的一项（窗口会给答案）：**store 方向在 0.30.0 上会不会崩**。09-23 的
-  `cuMemcpyBatchAsync error 1` 发生在旧 chroot 栈的抢占路径；09-27 的 Xid31 是我们自己
-  把 store 强切 Triton 造成的（已收窄为仅 load 走 Triton）。c7 收窄后的 store（上游 C++ DMA）
-  在 0.30.0 上 09-27 实测落了 21.4 GB 无异常，但没跑到抢占边界。
+- **实机窗口 1（2026-09-27 09:48–10:11，48 GiB）已跑**：12 项结构判据**全 PASS**，
+  探针三项判据 FAIL——但那是**探针自己的参数 bug**，不是 c8 缺陷（见下）。
 
+| 判据 | 结果 |
+|---|---|
+| worker/调度器两侧公共区协商 | PASS（row_stride=170.14 MB，slots=90.0+80.2 MB，num_chunks=302） |
+| 共享区单文件两 rank 共用 | PASS（PP1 创建 51.38 GB，PP0 join，barrier 后 unlink） |
+| **物理钉住 = 配置值** | PASS：`df used` 51,586,396,160 B vs 配置 51,539,607,552 B，**比值 1.00**（c2 私有路径历史 1.56~2.0） |
+| cudaHostRegister / 零断言 / 零熔断 | PASS（failed=0，ae=0，fuse=0） |
+| store（GPU→CPU）真实落地 | PASS：累计 **32.15 GB**，零异常 |
+| **load（CPU→GPU）真实回载** | PASS：累计 **5.37 GB**，**零新增 Xid**（历史上这条路径是 `cuMemcpyBatchAsync error 1` / Xid31 的现场） |
+| 定向命中（external_prefix_cache_hits_total） | **0** —— 见下「为什么 0」 |
+
+  **为什么 external hits = 0（探针参数问题，已修）**：窗口 1 的探针用中文标定比例
+  （0.5299 tok/字符）估算英文合成文档长度，实际每篇生成 **599k token**（而非 100k），
+  11 篇挤池 = **7.8M token** 灌进 48 GiB 档（容量 ≈1.33M token）⇒ 建档文档必被 LRU 冲掉，
+  定向重发当然 0 命中（`allocation_failure_total` 同步涨到 1495，正是"档满"的旁证）。
+  已修：探针增加**比例自动标定**（实测 tok/字符）+ **容量自诊断/自适应选参**。
+
+  **容量口径（本轮实测校准）**：CPU 档 ≈ **40.4 KB/token**（与 09-19 旧栈实测一致）
+  ⇒ `容量_token ≈ cpu_bytes_to_use / 40.4KB`：48 GiB≈1.33M、64 GiB≈1.78M、72 GiB≈2.0M。
+  要演示回载必须同时满足 `GPU池 + 建档 < 挤池 ≤ 容量 − 建档`（GPU 池 1.207M）——
+  48 GiB 结构性做不到，**这解释了 09-29 那轮 KVOFF「21h 零外部命中」的配置前提**：
+  档位没超过 GPU 池时，它只是个更慢的前缀缓存。
+
+- **实机窗口 2（64 GiB + 自适应探针）**：`KVOFF_BYTES=68719476736
+  PROBE_ARGS="--docs 1 --answer-tokens 1024" bash kvoff-c8-window.sh`——探针先标定
+  bytes/token 与 CPU 容量，再按 `P+B < F ≤ C−B` **自动**定文档/挤池规模。
+- 仍未定论的一项：**store 在抢占边界**（09-23 的 `cuMemcpyBatchAsync error 1` 现场）会不会崩。
+  窗口 1 的 store 累计 32 GB、load 5.37 GB 均零异常，但没把 KV 池压到抢占阈值。
+
+
+## 6.3 容量口径实测与策略方向（2026-09-27，含外部参考）
+
+### 实测：CPU 档有效容量 ≈1/6 GPU 池 ⇒ 这就是「零外部命中」的机制性原因
+
+窗口 3（64 GiB，c8 未打包）用 `usage_perc` 标定：一篇 20 000 token 全新文档只占
+`Δusage=10%` ⇒ **C ≈ 0.20 M token**，而 GPU 池 **P = 1.207 M token**（差 6 倍）；
+折合 **≈340–400 KB/token**（GPU 侧仅 32 KB/token）。
+
+⇒ `挤池 ≤ C − 建档` 与 `挤池 > P` 无法同时成立 ⇒ **回载必然 miss**。
+这正是 09-29 那轮生产观测（KVOFF 跑 21.5 h、`external_prefix_cache_hits_total=0`）的
+机制解释——**档位从未超过 GPU 池**，它只能当"更慢的前缀缓存"用。
+
+差距的两个来源（窗口 4 带 c9 复测后已定量）：
+1. **配置口径的每块字节偏大**：`cpu_page_size_per_worker` 用 `worker_kv_bytes_per_block`（本机
+   rank0 90.0 MB/块、rank1 80.2 MB/块），而真实要写的只有 **43.6/43.8 MB/块**（省 45~51%）。
+   **c9（已实现并实测）**：worker 改为发布真实字节（`Σ tensor.page_size × blocks_per_chunk`），
+   `row_stride` 270→**87.40 MB**、`num_chunks` 403→**786**（`create_worker` 的区段溢出断言兜底）。
+2. **≈6× 的「每 chunk 覆盖 token 数」损失（主因，未修）**：容量是**字节受限**的——
+   `C = 区域字节 ÷ 每 token 实存字节`。窗口 3/4 独立标定都得到 **C≈0.20 M token @64 GiB**
+   （`bpt≈340–400 KB/token`），而打包使 row 减半、chunk 翻倍后 **C 不变** ⇒ 说明限制不在 chunk 数。
+   反推：同一篇 20 000 token 文档消耗 78 个 chunk（=10%×786）⇒ **≈256 token/chunk**，
+   而一个块是 1616 token ⇒ **约 6.3 个 chunk 才覆盖 1 个块的范围**，≈ offload 分组数（5 组）+ 部分块开销。
+   ⇒ 上游 chunk 记账对**多组混合模型**是「每个（组 × 块范围）收一整行」，这是 12× 总差距的主因。
+   修它需要动上游 chunk/分组记账语义，风险高、本轮不做。
+
+### 目标口径（与外部同类机一致）
+
+宿主档 = **1.0× GPU 池**（本机 ≈1.2 M token；理想 32 KB/token 需 ~39 GB，按 40 KB/token 需 ~48 GB）。
+要达到它，c9 打包必须生效（预计 64 GiB → 1.4–2.1 M token）。
+
+### 若容量仍不够：走「策略」而不是「堆容量」
+
+参考仓库 `github.com/ChinaBoy0618/170hx-qwen3.8-27b-fullstack`（v1.0.0，4×170HX/256GB，SGLang）
+的同族结论与做法：
+- `--hicache-ratio 1.0`（1.5 被 256 GB RAM 硬约束否决）——容量铁律与本机一致；
+- 命中真正靠**分层+钉住**：单暖→tier1（压力下先逐）、双暖（hit_count≥2）→tier2（最后逐 + 12 h TTL）、
+  `POST /admin/pin_prefix`→tier4 永久（实测 evictable 20 191 → 63）。
+  **我们的演示失败正是"单暖被逐"这一条**；解法不是把档做大，而是给重要前缀晋级/钉住。
+- vLLM 侧有现成落点：`--kv-transfer-config` 的 `cache_policy_module_path` 可加载**外置
+  CachePolicy**（`v1/kv_offload/cpu/policies/factory.py`，源码注释「out-of-tree, no fork/patch」），
+  另有 `v1/kv_offload/tiering/`（fs/obj/p2p）分层骨架 ⇒ **c10 候选：外置 tier/TTL/pin 策略模块**。
+- ⚠️ **铁律（它用事故換来的）**：驱逐器绝不能把 O(1) 的 `popitem` 换成 O(n) 全索引扫描——v2 补丁
+  在 L3 近满 + write_back 压力下形成"多分钟扫描风暴"，backup 线程 100% CPU 钉死 → 写停摆 →
+  调度主循环挂死 →「容器 Up / HTTP 200 / 引擎死」僵尸签名。修复=**有界扫描窗口 + 驱逐预算上限**
+  （16 384 次 ≈50 ms worst-case）。与我们的 c6（有界等待 + store 熔断只读降级）同源，
+  且它的僵尸签名与我们历史 `shm_broadcast → RPC sample_tokens 超时 → EngineDead` 完全同类。
+
+### 运维铁律（本轮新增）
+
+**实例启动期间绝不覆盖补丁文件**：`scp` 非原子，worker 在启动早期 import `patches-extra/*.py`，
+覆盖瞬间可能被读到半截文件。改补丁要在无实例启动时做。
 
 ## 7. 回滚
 

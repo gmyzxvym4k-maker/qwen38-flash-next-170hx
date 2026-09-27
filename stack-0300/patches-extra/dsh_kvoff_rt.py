@@ -305,6 +305,22 @@ def _collect(tag, engine_id, world_size, need_decision, timeout, window_s):
         time.sleep(0.2)
 
 
+def _c8_capacity_tokens(spec, nchunks):
+    """CPU 档容量（token）的**近似**换算：chunk 覆盖 blocks_per_chunk 个块。
+
+    ⚠️ 只按 group0 的 tokens_per_block 折算（本模型多组异构，GDN 组块大小不同），
+    量级正确、不作精确值用。**不要**再犯"chunk 当成单块"的错（会把容量低估
+    blocks_per_chunk 倍，2026-09-27 日志里就写过一条 0.49 M token 的错误文案）。
+    """
+    try:
+        bpc = int(getattr(spec, "blocks_per_chunk", 1) or 1)
+        tpb = spec.tokens_per_block
+        t0 = int(tpb[0]) if tpb else 0
+        return nchunks * bpc * t0, bpc, t0
+    except Exception:
+        return 0, 0, 0
+
+
 def _c8_supported_reason(config, spec):
     par = config.parallel
     if par.pp_size <= 1:
@@ -353,6 +369,29 @@ def _c8_resolve(spec, publish, own_required=0):
     tag = _engine_tag(config.engine_id)
     world = int(par.world_size)
     rank = int(par.rank)
+
+    # ---- [c9] 打包：按"真实要写的字节"发布，而不是配置口径的估计值 ----
+    #   own 来自 OffloadingConfig.worker_kv_bytes_per_block（配置口径）。本机实测它
+    #   比真实分配大 ~3.6 倍（90 MB/块 vs 实际 ≈25 MB/块）⇒ 区域里大量空洞，48 GiB
+    #   只装得下 ≈0.47M token、64 GiB ≈0.63M token，**都小于 GPU 池 1.207M** ⇒ 回载
+    #   必然 miss（这是 09-29「21h 零外部命中」的机制性原因）。
+    #   own_required 由 create_worker 传入 = Σ tensor.page_size_bytes × blocks_per_chunk，
+    #   即该 rank 真正要写进 CPU 档的字节。取小者发布 ⇒ 同样配置能装的 token 数成倍
+    #   上升（create_worker 里 create_next_worker_view 的区段溢出断言保证放得下）。
+    packed = int(own_required) if int(own_required) > 0 else 0
+    if packed and packed < own:
+        _log(
+            "[dsh-kvoff c9] rank%s 打包：配置口径 own=%.2f MB → 真实 own_required=%.2f MB"
+            "（省 %.0f%%，按真实值发布）"
+            % (rank, own / 1e6, packed / 1e6, 100.0 * (1 - packed / float(own)))
+        )
+        own = packed
+    elif packed:
+        _log(
+            "[dsh-kvoff c9] rank%s own_required=%.2f MB ≥ 配置口径 own=%.2f MB ⇒ 用配置值"
+            % (rank, packed / 1e6, own / 1e6)
+        )
+
     base = {
         "engine_id": config.engine_id,
         "world_size": world,
@@ -422,9 +461,11 @@ def _c8_resolve(spec, publish, own_required=0):
                 "num_chunks": n,
                 "slots": slots_,
             }
+        cap, bpc, t0 = _c8_capacity_tokens(spec, n)
         _log(
             "c8[调度器侧]: decision=%s 各 rank 行数=%s ⇒ 采纳 num_chunks=%d"
-            "（上游口径 %d，公共区 row_stride=%.2f MB，容量≈%.2f M token，"
+            "（上游口径 %d，公共区 row_stride=%.2f MB，blocks_per_chunk=%d，"
+            "容量≈%.2f M token（按 group0 %d tok/块折算，多组异构故为近似），"
             "物理钉住=%.2f GiB / 配置=%.2f GiB）"
             % (
                 sorted(decisions),
@@ -432,7 +473,9 @@ def _c8_resolve(spec, publish, own_required=0):
                 n,
                 upstream,
                 row_stride / 1e6,
-                n * int(spec.tokens_per_block[0]) / 1e6,
+                bpc,
+                cap / 1e6,
+                t0,
                 n * (row_stride or _round_up(slots_[0])) / 2**30,
                 cpu_bytes / 2**30,
             )
@@ -501,20 +544,23 @@ def _c8_resolve(spec, publish, own_required=0):
     spec.kv_bytes_per_chunk = row
     spec.cpu_page_size_per_worker = aligned[rank]
     spec.num_chunks = nchunks
+    cap, bpc, t0 = _c8_capacity_tokens(spec, nchunks)
     _log(
-        "c8[worker rank%d pid%d]: 公共区已协商 —— row_stride=%.2f MB（slots=%s）"
-        " 本 rank 区段 [%s, %s) num_chunks=%d ⇒ 物理钉住 %.2f GiB（配置 %.2f GiB，"
-        "不再 ×world_size）"
+        "c8[worker rank%d pid%d]: 公共区已协商 —— row_stride=%.2f MB（slots=%s，"
+        "blocks_per_chunk=%d） 本 rank 区段 [%s, %s) num_chunks=%d ⇒ 物理钉住 %.2f GiB"
+        "（配置 %.2f GiB，不再 ×world_size），容量≈%.2f M token（近似）"
         % (
             rank,
             os.getpid(),
             row / 1e6,
             ["%.1fMB" % (s / 1e6) for s in slots],
+            bpc,
             offs[rank],
             offs[rank] + aligned[rank],
             nchunks,
             nchunks * row / 2**30,
             cpu_bytes / 2**30,
+            cap / 1e6,
         )
     )
     return True

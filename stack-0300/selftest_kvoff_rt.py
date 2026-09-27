@@ -353,6 +353,19 @@ tiny = _mk_spec(EID + ".tiny", 10 * 1024 * 1024, S0)
 check("c8 cpu_bytes < row_stride -> 私有",
       kvrt._c8_resolve(tiny, publish=True, own_required=S0) is False)
 
+# --- c9 打包：own_required < own 时按真实值发布，chunk 数成倍上升 ---
+EID8 = "selftest-c9-pack-%d" % os.getpid()
+_pub(EID8, 0, S0)
+_pub(EID8, 1, S1)
+sp_real = _mk_spec(EID8, CPU, S0, rank=0)
+_pub_real0 = S0 // 4          # 真实只要 1/4 字节
+_pub_real1 = S1 // 4
+check("c9 own_required<own 时按真实值打包（row 变小、chunk 变多）",
+      kvrt._c8_resolve(sp_real, publish=True, own_required=_pub_real0) is True
+      and sp_real.kv_bytes_per_chunk
+      == kvrt._round_up(_pub_real0) + kvrt._round_up(S1),
+      "row=%s" % sp_real.kv_bytes_per_chunk)
+
 # --- /dev/shm 不够 ⇒ 退回私有（公共区是 tmpfs 文件） ---
 _orig_statvfs = kvrt._shm_free_bytes
 kvrt._shm_free_bytes = lambda path="/dev/shm": 1024
