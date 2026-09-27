@@ -18,8 +18,12 @@
       断言必炸（实测 PP1 首个 store job 即 AssertionError → c6 熔断只读降级，
       CPU_to_GPU 恒 0）。上游对空组的正解是「保留位置、refs 为空列表」。
   c2  kv_offload/cpu/spec.CPUOffloadingSpec._uses_shared_region —— pp_size>1 时
-      走每 rank 私有 pinned 缓冲：共享 mmap 区按「创建者 ftruncate 自己的字节数」
-      定协议，PP 各 rank 层数不同 → 尺寸不同 → joiner 30s 超时（09-18 实锤）。
+      走每 rank 私有缓冲：共享区行布局的 slot 起点 = rank × cpu_page_size，
+      而该值是 per-rank 量（TP 下各 rank 层相同才成立）；PP 各 rank 层子集不同
+      ⇒ 行 stride 分歧 + total_size 取整各异（09-18 实测 34.32 vs 34.3566 GB）
+      ⇒ 创建者与 joiner 尺寸不一致 → 30s 超时。注意：该私有路径本身是**真
+      pinned**（else 分支 pin_memory=PIN_MEMORY，本栈实测 True），它不是 store
+      崩溃的根因——09-27 的相反定性已于 09-30 复核推翻，详见下方 c2 段。
   c6  有界等待 + store 熔断只读降级（gpu_worker / offloading.worker /
       offloading.common / offloading.scheduler 四处）：
       · handle_preemptions 的 worker.wait(jobs_to_flush) 原版无限阻塞主线程，
@@ -29,11 +33,15 @@
         scheduler 侧 complete_store(success=False) 撤登记并释放 CPU 块；
       · 任一失败 → store 方向熔断，后续不再建新 store 任务（只读降级：
         已有条目继续 lookup/load 命中；load 方向永不熔断，正确性零妥协）。
-  c7  store/load 全走 Triton SM 内核，彻底绕开 cuMemcpyBatchAsync——
-      该 C++ 批量拷贝 API 与 PP2 NCCL-P2P 并发在本驱动（610.43.03/GSP）上冻结
-      compute 流（09-23 崩溃 + 09-24 七次卡死共同根因）。0.30.0 的
-      _select_swap_blocks_fn 对 GPU→CPU 恒选 C++ 路径、且页 >28KB 也回落，
-      本模型块页是 MB 级 ⇒ 必须双方向强制 Triton 并去掉 MIN_N 回落。
+  c7  **仅 load(CPU→GPU)** 方向强制 Triton SM 内核并去掉 MIN_N 小批量回落：
+      0.30.0 的 _select_swap_blocks_fn 对 >28KB 的页会回落到 C++ 批量拷贝
+      （cuMemcpyBatchAsync），本模型块页是 MB 级 ⇒ 该方向必走那个 API，而它与
+      PP2 NCCL-P2P 并发在本驱动（610.43.03/GSP）上有冻结 compute 流的实证
+      （09-23 崩溃 + 09-24 七次卡死）。**store(GPU→CPU) 一律保持上游 C++ DMA**：
+      上游该方向显式选拷贝引擎（"GPU->CPU is bandwidth-bound"），强开 Triton 会
+      让 SM 内核解引用 host 指针 → MMU Fault VIRT_WRITE → Xid31（09-27 实锤）。
+      ⚠️ c7 只覆盖 load 方向；**store 方向的崩溃（C++ DMA error 1 / Triton Xid31）
+      不在其覆盖范围内**，那才是本栈 KVOFF 不可用的直接原因。
   c3  （metrics 未知 key 崩溃防御）不移植：旧崩溃由我们自加 stats key 引起，
       本移植不新增任何 stats key，上游 defs/sender 自洽。
   c5a （MTP 全组标 eagle 的双罚）不移植：0.30.0 原生含同款修复
@@ -106,16 +114,35 @@ def _patch_offloading_config(m):
 # ---------------------------------------------------------------------------
 # c2：PP>1 禁用共享 pinned mmap 区（每 rank 私有缓冲）
 #
-# ⚠️ 2026-09-27 实测定性：c2 是所有 store 崩溃的总根因，不是"规避尺寸不一致"的
-#    无害退路。上游 _uses_shared_region() 恒为 True（CUDA-alike），私有路径
-#    （create_worker 里 mmap_region=None）是给非 CUDA 平台的**无 pin 退化 tensor
-#    路径**：host 缓冲不经 cudaHostRegister，device 侧根本不能访问它。于是
-#    GPU→CPU store 必然失败：
-#      · C++ DMA（cuMemcpyBatchAsync）→ error 1 / CUDA_ERROR_INVALID_VALUE（旧栈）
-#      · Triton SM 内核 → MMU Fault VIRT_WRITE → Xid31 → EngineDead（09-27 实测）
-#    正确修法（未做）：让各 PP rank 的 region 尺寸统一后**恢复 shared region**
-#    （保住 pin），或给私有路径显式 cudaHostRegister；在那之前 KVOFF 只有崩溃没有
-#    收益，保持 FN_KVOFF=0。
+# 必要性（结构性，不是可选退路）：共享区把 region 切成
+#     |--- W0-C0---|--- W1-C0---| ... |
+# 的行布局，slot 起点 = rank × cpu_page_size，而
+#     cpu_page_size_per_worker = worker_kv_bytes_per_block × blocks_per_chunk
+# 是 per-rank 量。TP 下各 rank 层相同故成立；**PP>1 各 rank 层子集不同** →
+# 行 stride 与 slot 划分整体分歧，且 total_size = num_chunks ×
+# aligned_kv_bytes_per_chunk 又因整除取整各 rank 不同（09-18 实测
+# 34.32GB vs 34.3566GB）→ 创建者 ftruncate 自己的尺寸、joiner 却在等自己的
+# 预期尺寸 → _wait_for_file_size 30s 超时（09-18 实锤）。故 PP>1 必须回退
+# 私有缓冲；**"统一尺寸后恢复共享区"不是可行修法**（slot 布局仍分歧）。
+#
+# ⚠️ 纠正（2026-09-30 源码 + 实测复核，推翻 09-27 写的"无 pin 退化路径"定性）：
+#    私有路径**本来就是 pinned 的**——gpu_worker.py 该分支为
+#    torch.zeros((num_chunks, page), dtype=int8, pin_memory=PIN_MEMORY)，
+#    而 PIN_MEMORY = is_pin_memory_available() 在本栈实测 = True（CUDA 平台），
+#    内存由 cudaHostAlloc 提供（09-22 smaps 实测该路径为 /dev/zero 映射，
+#    与 cudaHostAlloc 特征吻合，是独立佐证）。所以"host 缓冲不经
+#    cudaHostRegister、device 侧无法访问"**不成立**，c2 也不是 store 崩溃的根因。
+#
+# 崩溃的真正形态是**版本相关**（尚未定论）：旧 chroot 栈
+#    (vLLM 0.1.dev20073 / torch 2.13.0+cu130) 在同一条 c2 私有 pinned 路径上
+#    store 累计 99.3GB、零 Xid（09-18 P6 深测；且实例能启动本身就证明 c2 生效，
+#    否则共享区在 PP>1 必然 30s 超时）；而 0.30.0 同路径、同 CUDA 崩：
+#    C++ DMA(cuMemcpyBatchAsync) → error 1 / CUDA_ERROR_INVALID_VALUE（09-23），
+#    Triton SM 内核 → MMU Fault VIRT_WRITE → Xid31（09-27）。两栈的
+#    _custom_ops.swap_blocks_batch 逐字相同、torch/CUDA 版本相同 → 差异收敛在
+#    各自编译的 C++ kernel（csrc/cache_kernels.cu 的 swap_blocks_batch）或其
+#    调用参数。定论前保持 FN_KVOFF=0：本机负载下它收益本就为 0
+#    （0929 实测 21.5h 零外部回载、GPU 池自扛 ~90% 命中，代价却是 107GB pinned）。
 # ---------------------------------------------------------------------------
 def _patch_cpu_spec(m):
     if _DISABLED:
@@ -131,9 +158,8 @@ def _patch_cpu_spec(m):
             if not getattr(cls, "_dsh_c2_logged", False):
                 cls._dsh_c2_logged = True
                 _log(
-                    "[dsh-kvoff c2] pp_size=%s>1 -> CPU KV 走每 rank 私有缓冲；"
-                    "该路径无 cudaHostRegister，store(GPU->CPU) 不可用，"
-                    "KVOFF 无法提供收益（详见 dsh_kvoff_rt.py c2 段说明）"
+                    "[dsh-kvoff c2] pp_size=%s>1 -> CPU KV 走每 rank 私有 pinned 缓冲"
+                    "（共享区行布局要求各 rank row stride 相同，PP 下不成立）"
                     % (par.pp_size,)
                 )
             return False
