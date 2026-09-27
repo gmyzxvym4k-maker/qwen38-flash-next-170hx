@@ -833,78 +833,68 @@ def _patch_cpu_gpu_worker(m):
         orig_transfer_async = H.transfer_async
         orig_wait = H.wait
 
+        def _dsh_cap(self, src_spec, dst_spec):
+            """返回 [(group_idx, src_fp, dst_fp), ...]，只覆盖本 job 涉及的组。"""
+            import torch as _t
+            _t.cuda.synchronize()
+            _gs = getattr(src_spec, "group_sizes", None)
+            if _gs is None:
+                _gs = getattr(dst_spec, "group_sizes", None)
+            groups = [gi for gi, n in enumerate(_gs or []) if n]
+            out = []
+            _pos = 0
+            for gi in groups:
+                # 【修正·2026-09-27】多组 job 的 id 是**按组顺序排布**的：第 gi 组用
+                # 第 _pos 个 id（此前一律取 [0]，对 load 的多组 job 是错的）。
+                sid = int(src_spec.block_ids[_pos])
+                did = int(dst_spec.block_ids[_pos])
+                _pos += int(_gs[gi])
+                tidx = sorted({r.tensor_idx for r in self.layer_refs_per_group[gi]})
+                fs = fd = 0
+                for i in tidx:
+                    tt = self.src_tensors[i]
+                    nn = min(2048, int(tt.shape[1]))
+                    fs = (fs * 1000003 + int(tt[sid, :nn].to(_t.int32).sum().item())) % (1 << 61)
+                for i in tidx:
+                    tt = self.dst_tensors[i]
+                    nn = min(2048, int(tt.shape[1]))
+                    fd = (fd * 1000003 + int(tt[did, :nn].to(_t.int32).sum().item())) % (1 << 61)
+                out.append((gi, fs, fd))
+            return out, None, None, groups
+
         def transfer_async(self, job_id, src_spec, dst_spec):
             if self.gpu_to_cpu and getattr(self, "_dsh_stalled", False):
                 return False  # 熔断后拒绝入队，由 connector 走失败 ack
-            ok = orig_transfer_async(self, job_id, src_spec, dst_spec)
-            # 【诊断·2026-09-27】store/load 的指针算术对照：同一 chunk 在
-            # 两个方向上的 host/device 偏移必须自洽，否则回载内容就是错的
-            # （现象：本地算/本地缓存命中都对，CPU 回载乱码）。
+            dbg_pre = None
             if _dbg_on():
+                c = self.__dict__.setdefault("_dsh_dbg_xfer", [0])
+                if c[0] < 8:
+                    c[0] += 1
+                    try:
+                        dbg_pre = _dsh_cap(self, src_spec, dst_spec)
+                    except Exception as exc:
+                        _log("dbg[xfer] 拷贝前指纹失败：%r" % (exc,))
+            ok = orig_transfer_async(self, job_id, src_spec, dst_spec)
+            if dbg_pre is not None:
+                # 判读：拷贝「前 vs 后」的 dst 指纹必须不同（否则这次拷贝没落地）；
+                #       拷贝后的 dst 指纹应等于 src 指纹（否则内容不对）。
                 try:
-                    cnt = self.__dict__.setdefault("_dsh_dbg_xfer", [0])
-                    cnt[0] += 1
-                    if cnt[0] <= 8:
-                        direction = "store(GPU->CPU)" if self.gpu_to_cpu else "load(CPU->GPU)"
-                        trs = getattr(self, "_transfers", None) or []
-                        tr = trs[-1] if trs else None
-                        gs = getattr(src_spec, "group_sizes", None)
-                        if gs is None:
-                            gs = getattr(dst_spec, "group_sizes", None)
+                    dbg_post = _dsh_cap(self, src_spec, dst_spec)
+                    pre, sid, did, groups = dbg_pre
+                    post = {gi: (fs, fd) for gi, fs, fd in dbg_post[0]}
+                    direction = "store(GPU->CPU)" if self.gpu_to_cpu else "load(CPU->GPU)"
+                    for gi, fs, fd in pre:
+                        fs2, fd2 = post.get(gi, (None, None))
                         _log(
-                            "dbg[xfer] #%d %s job=%s src_ids=%s dst_ids=%s group_sizes=%s "
-                            "page_sizes=%s"
+                            "dbg[xfer] #%d %s g=%d src/src'=%s/%s dst/dst'=%s/%s "
+                            "dst_changed=%s src==dst'=%s"
                             % (
-                                cnt[0],
-                                direction,
-                                job_id,
-                                list(getattr(src_spec, "block_ids", [])[:6]),
-                                list(getattr(dst_spec, "block_ids", [])[:6]),
-                                list(gs) if gs is not None else None,
-                                [[r.page_size_bytes for r in g]
-                                 for g in self.layer_refs_per_group],
+                                self.__dict__["_dsh_dbg_xfer"][0], direction, gi, fs, fs2,
+                                fd, fd2, fd != fd2, fs == fd2,
                             )
                         )
-                        if tr is not None:
-                            _log(
-                                "dbg[xfer] #%d num_bytes=%s src_ptr[0:4]=%s dst_ptr[0:4]=%s "
-                                "sizes[0:4]=%s"
-                                % (
-                                    cnt[0],
-                                    getattr(tr, "num_bytes", None),
-                                    [hex(int(x)) for x in
-                                     tr.batch_src.flatten()[:4].tolist()],
-                                    [hex(int(x)) for x in
-                                     tr.batch_dst.flatten()[:4].tolist()],
-                                    tr.batch_sizes.flatten()[:4].tolist(),
-                                )
-                            )
-                        # 【指纹】把该 job 首个 chunk 的 host 行前 2KB 打个指纹：
-                        # store 写完后打一次、load 读之前打一次，同一个 chunk id
-                        # 两次指纹若不同 ⇒ host 行在中间被覆盖（布局冲突/行复用）
-                        try:
-                            import torch as _t
-
-                            host = self.dst_tensors if self.gpu_to_cpu else self.src_tensors
-                            ids = list(
-                                (dst_spec if self.gpu_to_cpu else src_spec).block_ids
-                            )[:1]
-                            if ids:
-                                cid = int(ids[0])
-                                fp = 0
-                                for tt in host[:8]:
-                                    n = min(2048, int(tt.shape[1]))
-                                    fp = (fp * 1000003 + int(
-                                        tt[cid, :n].to(_t.int32).sum().item()
-                                    )) % (1 << 61)
-                                _log(
-                                    "dbg[xfer] #%d %s chunk=%d host_fp=%d"
-                                    % (cnt[0], direction, cid, fp)
-                                )
-                        except Exception as exc:
-                            _log("dbg[xfer] 指纹失败：%r" % (exc,))
-                except Exception as exc:  # 诊断绝不影响数据面
-                    _log("dbg[xfer] 记录失败：%r" % (exc,))
+                except Exception as exc:
+                    _log("dbg[xfer] 拷贝后指纹失败：%r" % (exc,))
             return ok
 
         def wait(self, job_ids):
@@ -1485,6 +1475,27 @@ def _install_sched_debug(S):
         return res, async_
 
     S.get_num_new_matched_tokens = get_num_new_matched_tokens
+    # 【关键诊断·2026-09-27】把 mamba 边界 store 的 hand-off 三元组打出来：
+    #   handoffs = {req_id: [(group_idx, block_id, boundary), ...]}
+    # 若同一请求同一组在**不同 boundary** 上拿到**同一个 block_id**，说明该组的 mamba
+    # 状态块是「每请求一块」而不是「每边界一块」⇒ 只有最后一个边界的状态是真状态，
+    # 其它边界存下去的是「当前位置的状态」而键写的是旧边界 ⇒ 回载状态与装载前缀不同边界。
+    orig_bnd = S._build_aligned_boundary_store_jobs
+    if not getattr(orig_bnd, "_dsh_bnd", False):
+        def _dbg_bnd(self, handoffs):
+            try:
+                for rid, entries in (handoffs or {}).items():
+                    _log(
+                        "dbg[boundary] req=%s entries=%s"
+                        % (str(rid)[:26], [(g, b, bd) for g, b, bd in entries])
+                    )
+            except Exception as exc:
+                _log("dbg[boundary] 记录失败：%r" % (exc,))
+            return orig_bnd(self, handoffs)
+
+        _dbg_bnd._dsh_bnd = True
+        S._build_aligned_boundary_store_jobs = _dbg_bnd
+        _log("dbg: boundary hand-off 诊断已挂")
     _log("dbg: scheduler 侧 lookup 诊断已挂")
 
 
