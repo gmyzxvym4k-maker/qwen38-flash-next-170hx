@@ -17,7 +17,8 @@ WAIT=${KVOFF_ACCEPT_WAIT:-240}     # 前置门禁最多等生产就绪的秒数�
 FORCE=${KVOFF_ACCEPT_FORCE:-0}
 SOAK=${SOAK_IF_PASS:-0}            # 1=探针判定 PASS 后不恢复生产，直接带着二级缓存进入 soak
 export XDG_RUNTIME_DIR=/run/user/1000
-export SUDO_PASS=${SUDO_PASS:?本副本已脱敏：先 export SUDO_PASS=<部署机 sudo 口令>}
+EXT_HOST="${EXT_HOST:-}"
+export SUDO_PASS="${SUDO_PASS:?本副本已脱敏：先 export SUDO_PASS=<部署机 sudo 口令>}"
 log() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$RES"; }
 
 # 18420 上是否已有 vLLM serve 进程（用 python 直读 /proc，避免 ps|grep 自匹配）
@@ -160,7 +161,7 @@ HITS=$(grep -a '"step": "reload"' "$CHURN_OUT" | tail -1 | sed -n 's/.*"external
 EXER=$(grep -a '"step": "reload"' "$CHURN_OUT" | tail -1 | sed -nE 's/.*"tier_exercised": (true|false).*/\1/p')
 log "判定：verdict=$([ "$VERDICT" = "1" ] && echo PASS || echo FAIL) tier_exercised=${EXER:-?} external_hits_delta=${HITS:-?}"
 
-log "本轮 <EXTERNAL_HOST> 登录次数（外部干扰取证）：$(echo "$SUDO_PASS" | sudo -S -p '' journalctl _COMM=sshd --since '-20min' --no-pager 2>/dev/null | grep -ac 'from <EXTERNAL_HOST>')"
+log "本轮外部自动化主机登录次数（干扰取证，EXT_HOST 未设则跳过）：${EXT_HOST:+$(echo "$SUDO_PASS" | sudo -S -p '' journalctl _COMM=sshd --since '-20min' --no-pager 2>/dev/null | grep -ac "from $EXT_HOST")}${EXT_HOST:-（未设置 EXT_HOST=<来源IP>，计 0）}"
 
 if [ "$SOAK" = "1" ] && [ "$VERDICT" = "1" ]; then
   # soak 模式：判定通过就**不恢复**，让二级缓存带着真实流量继续跑；看门狗恢复计时，
