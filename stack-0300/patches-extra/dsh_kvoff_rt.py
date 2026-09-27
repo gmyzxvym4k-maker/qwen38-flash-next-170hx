@@ -1720,6 +1720,118 @@ def _dsh_reap_stale_jobs(sched):
     return reaped
 
 
+def _patch_qwen4_exp_mamba_flag(m):
+    """FN_KVOFF_MAMBA_ALL=1：把 Qwen4ExpForConditionalGeneration 标成
+    supports_mamba_prefix_caching=True。
+
+    背景（2026-09-27 第 7 轮）：0.30.0 的 model_executor/models/config.py:630-640 对
+    `--mamba-cache-mode all` 有一条静默降级——模型类没声明 supports_mamba_prefix_caching
+    就退回 align。本模型（qwen4_exp）确实没声明，于是 align 模式下每个请求只有**一个**
+    mamba 边界（hand-off 只给最终对齐位置），回载时恢复的递归状态与"装载边界"不是同一个点，
+    表现为"本地命中正确、CPU 回载乱码"。all 模式给**每个块边界**都做状态 checkpoint，
+    hand-off/回载才能落在装载边界上。开关缺省关，纯实验。
+    """
+    if _DISABLED:
+        return
+    if os.environ.get("FN_KVOFF_MAMBA_ALL", "0").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return
+    C = getattr(m, "Qwen4ExpForConditionalGeneration", None)
+    if C is None:
+        _log("c13b: 本模块没有 Qwen4ExpForConditionalGeneration（跳过）")
+        return
+    if not getattr(C, "supports_mamba_prefix_caching", False):
+        C.supports_mamba_prefix_caching = True
+        _log(
+            "c13b: 强制 %s.supports_mamba_prefix_caching=True（all 模式实验）"
+            % getattr(C, "__name__", C)
+        )
+    else:
+        _log("c13b: 模型类已声明 supports_mamba_prefix_caching=True（无需改）")
+
+
+def _patch_model_config_mamba(m):
+    """FN_KVOFF_MAMBA_ALL=1：直接在 ModelConfig 上把 supports_mamba_prefix_caching
+    置 True。
+
+    为什么还要这一层（第 7 轮实测）：只在模型类上打标记**无效**——配置校验发生在
+    APIServer 构造 VllmConfig 时（config.py:630-640），而那时模型模块可能还没被导入，
+    于是照样打警告 "falling back to 'align' mode"。打在 ModelConfig 属性上才是
+    APIServer/EngineCore 两侧都必经的路径。
+    """
+    if _DISABLED:
+        return
+    if os.environ.get("FN_KVOFF_MAMBA_ALL", "0").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return
+    C = getattr(m, "ModelConfig", None)
+    if C is None or getattr(C, "_dsh_mamba_all", False):
+        return
+    C.supports_mamba_prefix_caching = property(lambda self: True)
+    C._dsh_mamba_all = True
+    _log("c13c: ModelConfig.supports_mamba_prefix_caching -> True（all 模式实验）")
+
+
+def _patch_single_type_manager(m):
+    """SimpleCPUOffloadConnector 用：让**非前缀可缓存**分组（本模型的 QSA 环形组，
+    CircularBufferSpec, block_size=8, prefix_cacheable=False）在位置扫描里被跳过。
+
+    背景（2026-09-27 第 10 轮实机崩溃栈）：
+      simple_kv_offload/manager.py:835 `_select_eager_blocks_to_store` 逐组扫描，
+      对每组调 `resolve_block_hashes(request.block_hashes, hash_block_size=1616, group_size)`,
+      而 kv_cache_utils.py:2881 有 `assert block_size % hash_block_size == 0`；
+      环形组 group_size=8 ⇒ 断言炸 → EngineCore dead（首个请求即死）。
+      上游对 mamba(align) 组已经用 `has_positionally_stable_blocks=False` 跳过
+      （single_type_kv_cache_manager.py:1448），但环形组落到了默认 manager（基类返回 True）
+      —— 语义上它同样"位置不稳/不可前缀复用"（这正是它 prefix_cacheable=False 的原因）。
+
+    只在 **VLLM_USE_SIMPLE_KV_OFFLOAD=1** 时生效；该属性全树只有 simple offload 读，
+    对经典连接器/生产（都不启用 offload）零影响。
+    """
+    if _DISABLED:
+        return
+    if os.environ.get("VLLM_USE_SIMPLE_KV_OFFLOAD", "0").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return
+    patched = 0
+    for name in dir(m):
+        C = getattr(m, name)
+        if not isinstance(C, type):
+            continue
+        prop = C.__dict__.get("has_positionally_stable_blocks")
+        if not isinstance(prop, property) or getattr(prop.fget, "_dsh_stable", False):
+            continue
+        orig_fget = prop.fget
+
+        def fget(self, _o=orig_fget):
+            try:
+                spec = getattr(self, "kv_cache_spec", None)
+                if spec is not None and not getattr(spec, "prefix_cacheable", True):
+                    return False
+            except Exception:
+                pass
+            return _o(self)
+
+        fget._dsh_stable = True
+        C.has_positionally_stable_blocks = property(fget)
+        patched += 1
+        _log("c14: %s.has_positionally_stable_blocks 已加「非前缀可缓存 ⇒ False」" % name)
+    if patched:
+        _log("c14: simple offload 环形组跳过补丁已挂（%d 个 manager 类）" % patched)
+
+
 PATCHES = {
     "vllm.distributed.kv_transfer.kv_connector.v1.offloading.config":
         _patch_offloading_config,
@@ -1730,6 +1842,10 @@ PATCHES = {
     "vllm.distributed.kv_transfer.kv_connector.v1.offloading.scheduler":
         _patch_offloading_scheduler,
     "vllm.v1.kv_offload.cpu.spec": _patch_cpu_spec,
+    "vllm.v1.core.single_type_kv_cache_manager": _patch_single_type_manager,
+    "vllm.config.model": _patch_model_config_mamba,
+    "vllm.models.qwen4_exp.nvidia.model": _patch_qwen4_exp_mamba_flag,
+    "vllm.models.qwen4_exp.amd.model": _patch_qwen4_exp_mamba_flag,
     "vllm.v1.kv_offload.cpu.manager": _patch_cpu_manager,
     "vllm.v1.kv_offload.cpu.gpu_worker": _patch_cpu_gpu_worker,
     "vllm.v1.kv_offload.cpu.swap_blocks_triton": _patch_swap_triton,
