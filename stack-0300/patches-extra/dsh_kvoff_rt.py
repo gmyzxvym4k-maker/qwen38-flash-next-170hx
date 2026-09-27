@@ -7,10 +7,16 @@
 （PYTHONPATH sitecustomize 注入，site-packages 零改动），供随时经 FN_KVOFF=1 启用。
 
 对照旧补丁组的取舍：
-  c1  offloading/config.get_offloading_group_ids —— 剔除不可前缀缓存的分组
-      （本模型 = QSA key 环形缓冲 CircularBufferSpec，block=ring 不整除 1616）与
-      空层分组（PLE 占位）。0.30.0 的 scheduler/worker 全部按显式 group_id 或
-      「过滤后位置」索引（无旧栈的承重位置问题），源头过滤即完整闭环。
+  c1  offloading/config.get_offloading_group_ids —— 只剔除「不可前缀缓存」的分组
+      （本模型 = QSA key 环形缓冲 CircularBufferSpec，block=ring=8 不整除 1616）。
+      【09-27 实机验证修正】**不得**再剔除「空 layer_names」分组：worker 进程的
+      kv_cache_config 只含本 PP rank 的层名（上游 generate_scheduler_kv_cache_config
+      注释："All workers have the same kv_cache_config except layer names"），本模型
+      的 PLE 占位分组在 PP0 有层、在 PP1 为空 —— 若按空层剔除，PP1 的
+      group_data_refs 就会比 scheduler 的 kv_group_configs 少一项，store 路径
+      gpu_worker.transfer_async 的 len(group_sizes)==len(layer_refs_per_group)
+      断言必炸（实测 PP1 首个 store job 即 AssertionError → c6 熔断只读降级，
+      CPU_to_GPU 恒 0）。上游对空组的正解是「保留位置、refs 为空列表」。
   c2  kv_offload/cpu/spec.CPUOffloadingSpec._uses_shared_region —— pp_size>1 时
       走每 rank 私有 pinned 缓冲：共享 mmap 区按「创建者 ftruncate 自己的字节数」
       定协议，PP 各 rank 层数不同 → 尺寸不同 → joiner 30s 超时（09-18 实锤）。
@@ -75,20 +81,22 @@ def _patch_offloading_config(m):
             if not getattr(spec, "prefix_cacheable", True):
                 dropped.append((gid, type(spec).__name__, "not prefix_cacheable"))
                 continue
-            if not group.layer_names:
-                dropped.append((gid, type(spec).__name__, "empty layers"))
-                continue
             keep.append(gid)
         if not keep:
             _log("c1: 过滤后无可用分组，回退不过滤（原版行为）")
             return ids
-        if dropped:
-            lg = getattr(m, "logger", None)
-            if lg is not None:
-                lg.info(
-                    "[dsh-kvoff c1] offloading 分组 %s -> %s，剔除 %s",
-                    list(ids), list(keep), dropped,
-                )
+        # 常驻诊断走 stderr：config.py 模块**没有** logger，原先的 lg.info 恒静默
+        # （09-27 实机验证时因此完全看不到剔除痕迹，误判成「未剔除任何分组」）。
+        _log(
+            "c1: kv_cache_groups=%d -> offload 分组 %s（原 %s，剔除 %s）pid=%d"
+            % (
+                len(kv_cache_config.kv_cache_groups),
+                list(keep),
+                list(ids),
+                dropped,
+                os.getpid(),
+            )
+        )
         return tuple(keep)
 
     filtered._dsh_c1 = True
@@ -97,6 +105,17 @@ def _patch_offloading_config(m):
 
 # ---------------------------------------------------------------------------
 # c2：PP>1 禁用共享 pinned mmap 区（每 rank 私有缓冲）
+#
+# ⚠️ 2026-09-27 实测定性：c2 是所有 store 崩溃的总根因，不是"规避尺寸不一致"的
+#    无害退路。上游 _uses_shared_region() 恒为 True（CUDA-alike），私有路径
+#    （create_worker 里 mmap_region=None）是给非 CUDA 平台的**无 pin 退化 tensor
+#    路径**：host 缓冲不经 cudaHostRegister，device 侧根本不能访问它。于是
+#    GPU→CPU store 必然失败：
+#      · C++ DMA（cuMemcpyBatchAsync）→ error 1 / CUDA_ERROR_INVALID_VALUE（旧栈）
+#      · Triton SM 内核 → MMU Fault VIRT_WRITE → Xid31 → EngineDead（09-27 实测）
+#    正确修法（未做）：让各 PP rank 的 region 尺寸统一后**恢复 shared region**
+#    （保住 pin），或给私有路径显式 cudaHostRegister；在那之前 KVOFF 只有崩溃没有
+#    收益，保持 FN_KVOFF=0。
 # ---------------------------------------------------------------------------
 def _patch_cpu_spec(m):
     if _DISABLED:
@@ -111,13 +130,12 @@ def _patch_cpu_spec(m):
         if par is not None and getattr(par, "pp_size", 1) > 1:
             if not getattr(cls, "_dsh_c2_logged", False):
                 cls._dsh_c2_logged = True
-                lg = getattr(m, "logger", None)
-                if lg is not None:
-                    lg.info(
-                        "[dsh-kvoff c2] pp_size=%s>1 -> CPU KV 走每 rank 私有 "
-                        "pinned 缓冲（共享 mmap 区在 PP 各 rank 尺寸不一致）",
-                        par.pp_size,
-                    )
+                _log(
+                    "[dsh-kvoff c2] pp_size=%s>1 -> CPU KV 走每 rank 私有缓冲；"
+                    "该路径无 cudaHostRegister，store(GPU->CPU) 不可用，"
+                    "KVOFF 无法提供收益（详见 dsh_kvoff_rt.py c2 段说明）"
+                    % (par.pp_size,)
+                )
             return False
         return orig(self)
 
@@ -139,11 +157,17 @@ def _patch_swap_triton(m):
 def _patch_cpu_gpu_worker(m):
     if _DISABLED:
         return
-    # ---- c7: _select_swap_blocks_fn 双方向强制 Triton ----
+    # ---- c7: _select_swap_blocks_fn 仅 load 方向强制 Triton ----
     sel = getattr(m, "_select_swap_blocks_fn", None)
     if sel is not None and not getattr(sel, "_dsh_c7", False):
 
         def sel_patched(layer_refs_per_group, gpu_to_cpu):
+            # ⚠️ 铁律：GPU→CPU（store）绝不能走 Triton。上游 gpu_worker.py:41-43
+            # 显式让该方向走拷贝引擎；2026-09-27 实测强行切 Triton 会在
+            # store 时让 SM 内核解引用 host 指针 → MMU Fault VIRT_WRITE → Xid31
+            # → EngineDead（比 C++ 的 error 1 危险得多：Xid31 可致 GPU 降级）。
+            if gpu_to_cpu:
+                return sel(layer_refs_per_group, gpu_to_cpu)
             if (
                 getattr(m, "HAS_TRITON", False)
                 and not m.current_platform.is_xpu()
@@ -167,7 +191,8 @@ def _patch_cpu_gpu_worker(m):
 
         sel_patched._dsh_c7 = True
         m._select_swap_blocks_fn = sel_patched
-        _log("c7: store/load 双向强制 Triton swap 内核（跳过 THRESHOLD/MIN_N 回落）")
+        _log("c7: 仅 CPU->GPU(load) 方向强制 Triton swap 内核；"
+             "store 方向保持上游 C++ DMA（Triton 会 MMU fault）")
 
     # ---- c6a：store 方向熔断 + 有界等待（SingleDirectionOffloadingHandler） ----
     H = getattr(m, "SingleDirectionOffloadingHandler", None)

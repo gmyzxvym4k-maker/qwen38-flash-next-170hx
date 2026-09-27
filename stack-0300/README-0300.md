@@ -186,10 +186,10 @@ extra 侧再用 `_PATCHES_ROOT` 排除整棵补丁树，避免回链成无限递
 
 | 组 | 落点（0.30.0） | 语义 |
 |---|---|---|
-| c1 | `offloading.config.get_offloading_group_ids` | 剔除 QSA 环形分组（CircularBufferSpec，ring 8 ∤ 1616）与空占位分组；0.30.0 的 scheduler/worker 按显式 group_id 索引，源头过滤即完整闭环（不再需要旧栈的保位 hack） |
-| c2 | `cpu.spec.CPUOffloadingSpec._uses_shared_region` | pp_size>1 → 每 rank 私有 pinned 缓冲（共享 mmap 区在 PP 各 rank 尺寸不一致） |
+| c1 | `offloading.config.get_offloading_group_ids` | **只**剔除 `prefix_cacheable=False` 的分组（QSA 环形 CircularBufferSpec，ring 8 ∤ 1616）；**空 `layer_names` 分组必须保留**——PP>1 时各 rank 只带自己的层名，空组是合法占位，剔除会让 worker 的组数与 scheduler 不一致（2026-09-27 实测修正） |
+| c2 | `cpu.spec.CPUOffloadingSpec._uses_shared_region` | pp_size>1 → 每 rank 私有 tensor 缓冲（共享 mmap 区在 PP 各 rank 尺寸不一致）。**⚠️ 该路径不经 `cudaHostRegister`，device 侧无法访问 host 缓冲，store 必失败**——这是 KVOFF 在本栈不可用的总根因（2026-09-27 实测） |
 | c6 | `cpu.gpu_worker`（handler.wait 有界+熔断、worker.wait 回传未完成集）、`offloading.common`（meta 增 failed_jobs/fuse_tripped + aggregate 合并）、`offloading.worker`（提交 try/except、失败 ack、迟到完成去重、熔断后只读降级）、`offloading.scheduler`（update_connector_output 完整替换：失败 job 走 `complete_store(success=False)` 撤登记+释放块；fuse 后两个 store 构建函数短路返回 {}） | 拆掉「worker 主线程无限 event 等待 × PP2 NCCL 中继」锁死环（09-24 七次卡死根因）；store 失败只丢缓存条目，load 正确性零妥协、永不熔断 |
-| c7 | `cpu.swap_blocks_triton.MIN_N=0` + `cpu.gpu_worker._select_swap_blocks_fn` 双向强制 Triton | 彻底绕开 cuMemcpyBatchAsync（09-23 崩溃/09-24 卡死共同毒点：与 PP2 NCCL-P2P 并发冻结 compute 流）。本模型块页 MB 级 >上游 28KB 阈值，必须显式覆盖 |
+| c7 | `cpu.swap_blocks_triton.MIN_N=0` + `cpu.gpu_worker._select_swap_blocks_fn` **仅 load 方向**强制 Triton | load(CPU→GPU) 绕开 cuMemcpyBatchAsync（与 PP2 NCCL-P2P 并发会冻结 compute 流）；**store(GPU→CPU) 一律保持上游 C++ DMA**——上游 `gpu_worker.py:41-43` 显式禁止该方向用 Triton（"GPU->CPU is bandwidth-bound; the dedicated copy engine beats Triton"），强开会让 SM 内核解引用 host 指针 → MMU Fault VIRT_WRITE → Xid31（2026-09-27 实测） |
 
 启用方式（任一）：
 - 手动：`FN_KVOFF=1 [FN_KVOFF_BYTES=<字节>] bash start-flash-next-0300.sh`（容量缺省 64 GiB）
@@ -203,7 +203,36 @@ extra 侧再用 `_PATCHES_ROOT` 排除整棵补丁树，避免回链成无限递
 自检：`PYTHONPATH=$PWD/patches:$PWD/patches-extra /home/ll/vllm-env/bin/python selftest_kvoff_rt.py`
 （24 项判据，全绿 PASS；不占 GPU、不动服务）。argv 装配四态已验证：
 缺省/FN_KVOFF=0 不带 --kv-transfer-config 且体检无告警；=1 正确注入 JSON。
-**尚未做**：FN_KVOFF=1 的实机验证窗口（需停机重启 8 分钟，等需要启用时执行）。
+### 2026-09-27 实机验证结论：c1 修复有效，但 KVOFF 在本栈仍不可用 → 保持 FN_KVOFF=0
+
+验证动作：停看门狗 → 停实例（优雅退出、显存归零）→ 装 c1 修复 → `FN_KVOFF=1`
+（96 GiB）按 launch.env 原样重启 → 探针 4×387k token 文档 + 重发第 1 篇。
+
+- ✅ **c1 修复被证实**：启动日志三侧分组一致
+  `c1: kv_cache_groups=6 -> offload 分组 [0, 1, 2, 3, 5]`（scheduler 侧 group 4 是
+  `CircularBufferSpec`，worker 侧同一组以 `UniformTypeKVCacheSpecs` 包装器出现，
+  `prefix_cacheable=False` 判定一致），**零 AssertionError、零熔断**；
+  store 真实跑起来：2 篇文档累积 `GPU_to_CPU` 21.4 GB、CPU 档填充至 10.3%。
+  修复前是首个 store job 即断言失败 → `fuse tripped` 只读降级（09-27 08:07 实录）。
+- ❌ **但第 3 篇文档时 Worker_PP1 崩**：`cudaErrorIllegalAddress` → `EngineDeadError`；
+  dmesg 实锤 **Xid 31 MMU Fault VIRT_WRITE**（PCI 04:00 = GPU1，pid = Worker_PP1，
+  报错栈落在 GDN attention 的 `a.contiguous()`，属异步上报）。dmesg 现场：
+  `MMU Fault: ENGINE GRAPHICS GPC3 GPCCLIENT_T1_4 faulted @ 0x7fb4_0c000000,
+  Fault is of type FAULT_PDE ACCESS_TYPE_VIRT_WRITE`。
+- **总根因 = c2 把 CUDA 生产路径推到了「非 CUDA 退化 tensor 路径」**：上游
+  `_uses_shared_region()` 在 CUDA-alike 上**恒为 True**，其 False 分支
+  （`create_worker` 里 `mmap_region=None`）本是给非 CUDA 平台的**无 pin** 退化路径，
+  host 缓冲不经过 `pin_mmap_region()` 的 `cudaHostRegister`，device 侧根本不能访问。
+  因此 GPU→CPU store 必然失败，失败签名只取决于用哪个 API：
+  C++ DMA → `error 1`（CUDA_ERROR_INVALID_VALUE，旧栈 09-23 签名）；
+  Triton SM 内核 → 直接 MMU fault → Xid31（更危险，可致 GPU 降级）。
+- **本次处置**：① c1 修复保留；② c7 收窄为仅 load 方向（消除 Xid31 危险）；
+  ③ c2 保留但在启动时打醒目 stderr 告警；④ 生产回滚 `FN_KVOFF=0`
+  （launch.env 已写回），重启 200s 内恢复 health 200、看门狗 timer 已恢复。
+- **后续若要真正启用**：唯一正解是**让 PP2 各 rank 的 region 尺寸统一后恢复
+  shared region**（保住 `cudaHostRegister`），或给私有路径显式补
+  `cudaHostRegister`/`pin_memory`。单纯更换拷贝 API（c7 的原始思路）已被证伪——
+  换 API 只改变失败签名，不解决「host 缓冲不可被 device 访问」这个前提。
 
 ## 7. 回滚
 

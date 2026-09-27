@@ -6,3 +6,6 @@ __pycache__/
 *.log
 !tools/*.log
 tools/*.raw
+
+# 本地改动备份（不入库）
+*.bak-*
