@@ -435,3 +435,33 @@ inner 自己 export —— 这一步不做，控制台/脚本都点不亮 simple
 > 背景：第一次生产档验收在 12 篇挤池的第 12 篇时被**外部进程 SIGTERM**（<EXTERNAL_HOST>
 > 10 秒内登录 3 次；日志签名 `KeyboardInterrupt("terminated")` + EngineCore `RuntimeError("cancelled")`），
 > 不是引擎自身故障 —— 因此脚本把外部登录计数也一并留档。
+
+---
+
+## 11. 第 13 轮：FP8 PLE 的真实加载契约（v2 产物）+ 联合验证窗口
+
+### 11.1 第 11 轮为什么加载失败
+
+`Qwen4ExpNGramEmbedding.load_weights`（ngram_embedding.py:880-930）**只拦截**
+`ngram_embedding.shard_<i>.weight` 这**一种**名字，其余一律丢给 `AutoWeightsLoader`。
+上一版产物给每个 shard 配了 `shard_i.weight_scale` ⇒ 该名字走到 AutoWeightsLoader ⇒
+`ValueError: There is no module or parameter named 'ngram_embedding.shard_0'`。
+
+### 11.2 正确契约（v2，`quantize_ple_fp8_v2.py`）
+
+* 128 个 `...ngram_embedding.shard_<i>.weight`（fp8_e4m3，行序 = `shard_index × shard_size`）
+* **唯一**一个 `...ngram_embedding.weight_scale`（f32 标量；`PerTensorScaleParameter`，全局 scale）
+* `config.json` 里 `text_config.ple_embedding_dtype = "float8_e4m3fn"`
+* ⇒ 所有 shard 必须共用**同一个** scale。实测 128 个 per-shard amax 比值 ≈ 1.95×
+  （scale 1.02e-4 ~ 1.99e-4），取全局 S 后小 shard 的 FP8 相对误差翻倍到 ~1.3e-3
+  —— 与旧记录「逐行 FP8 6.7e-4」同量级，对 n-gram 表可接受；要更准只能改成每 shard 一个 scale
+  并给 loader 加分支（暂不做）。
+* 产物：`/media/ll/data/models-fp8ple/Qwen3.8-Flash-Next-W4A16-AutoRound-fp8ple-v2`（51.2GB 分片 + 软链）
+
+### 11.3 联合验证窗口 `kvoff-fp8-window.sh`
+
+FP8 PLE（v2）+ `FN_SIMPLE_OFFLOAD=64` + `FN_MAXLEN=131072` + `--num-gpu-blocks-override 100`
+（小池 ~161k token，配 3×~60k 挤池即可强制造走 CPU 档），判据：
+① PLE 判据行出现 `Qwen4ExpPLEFp8EmbeddingMethod / weight_dtype=torch.float8_e4m3fn`；
+② 启动耗时（对比 BF16 表的 ~5 分钟）；
+③ `kvoff-scale` 的 fresh 与 reload 答案一致且 `external_hits_delta > 0`（真命中 CPU 档）。
