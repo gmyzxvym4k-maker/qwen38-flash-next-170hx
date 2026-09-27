@@ -350,57 +350,142 @@ worker 在 `/dev/shm/vllm_kvoff_slot.<engine_id>.r<rank>.json` 发布自己的�
 | **物理钉住 = 配置值** | PASS：`df used` 51,586,396,160 B vs 配置 51,539,607,552 B，**比值 1.00**（c2 私有路径历史 1.56~2.0） |
 | cudaHostRegister / 零断言 / 零熔断 | PASS（failed=0，ae=0，fuse=0） |
 | store（GPU→CPU）真实落地 | PASS：累计 **32.15 GB**，零异常 |
-| **load（CPU→GPU）真实回载** | PASS：累计 **5.37 GB**，**零新增 Xid**（历史上这条路径是 `cuMemcpyBatchAsync error 1` / Xid31 的现场） |
+| **load（CPU→GPU）真实回载** | ❌ **恒为 0**（见下方勘误：早期"5.37 GB"是探针口径 bug 造成的假值） |
 | 定向命中（external_prefix_cache_hits_total） | **0** —— 见下「为什么 0」 |
 
   **为什么 external hits = 0（探针参数问题，已修）**：窗口 1 的探针用中文标定比例
   （0.5299 tok/字符）估算英文合成文档长度，实际每篇生成 **599k token**（而非 100k），
-  11 篇挤池 = **7.8M token** 灌进 48 GiB 档（容量 ≈1.33M token）⇒ 建档文档必被 LRU 冲掉，
+  11 篇挤池 = **7.8M token** 灌进 48 GiB 档（容量 ≈1.44M token）⇒ 建档文档必被 LRU 冲掉，
   定向重发当然 0 命中（`allocation_failure_total` 同步涨到 1495，正是"档满"的旁证）。
   已修：探针增加**比例自动标定**（实测 tok/字符）+ **容量自诊断/自适应选参**。
 
-  **容量口径（本轮实测校准）**：CPU 档 ≈ **40.4 KB/token**（与 09-19 旧栈实测一致）
-  ⇒ `容量_token ≈ cpu_bytes_to_use / 40.4KB`：48 GiB≈1.33M、64 GiB≈1.78M、72 GiB≈2.0M。
+  **容量口径（本轮实测校准，2026-09-27 勘误后）**：CPU 档 ≈ **35.7 KB/token**
+  ⇒ `容量_token ≈ cpu_bytes_to_use / 35.7KB`：48 GiB≈1.44M、64 GiB≈**1.12M**（实标）、96 GiB≈2.9M。
   要演示回载必须同时满足 `GPU池 + 建档 < 挤池 ≤ 容量 − 建档`（GPU 池 1.207M）——
-  48 GiB 结构性做不到，**这解释了 09-29 那轮 KVOFF「21h 零外部命中」的配置前提**：
-  档位没超过 GPU 池时，它只是个更慢的前缀缓存。
+  64 GiB 档**只差 7%**（早期"差 6 倍"的算法分母错了，见 §6.3 勘误）。
 
 - **实机窗口 2（64 GiB + 自适应探针）**：`KVOFF_BYTES=68719476736
   PROBE_ARGS="--docs 1 --answer-tokens 1024" bash kvoff-c8-window.sh`——探针先标定
   bytes/token 与 CPU 容量，再按 `P+B < F ≤ C−B` **自动**定文档/挤池规模。
+- **实机窗口 7（64 GiB + `--num-gpu-blocks-override 80`）**：**12 项结构判据全 PASS**
+  （含物理钉住比值 1.00、store 8.299 GB 真实落地），但探针被**引擎卡死**打断（退出码 143）——
+  详细现场与机制指向见 §6.3「窗口 7」。
 - 仍未定论的一项：**store 在抢占边界**（09-23 的 `cuMemcpyBatchAsync error 1` 现场）会不会崩。
-  窗口 1 的 store 累计 32 GB、load 5.37 GB 均零异常，但没把 KV 池压到抢占阈值。
+  窗口 1 的 store 累计 32 GB 正常；**load 恒为 0**（无命中 ⇒ 无需搬回），也从未把 KV 池压到抢占阈值。
+  窗口 7 首次把池压到 6.6%（80 块）——**没崩，但卡了 9 分半**，见 §6.3。
+
+### ⚠️ 勘误（2026-09-27）：早期「CPU→GPU 回载 5.37 GB」是假值
+
+探针早期按子串累加 "kv_offload" 指标，把 `kv_offload_*_created`（**unix 时间戳 gauge**，
+≈1.79e9）与直方图桶一起当成字节数 ⇒ 凭空造出 ≈5.37 GB。**真值**
+`vllm:kv_offload_total_bytes_total{transfer_type="CPU_to_GPU"}` 与 `kv_offload_load_bytes`
+在五轮窗口里**一直是 0**。探针已改为只累加真字节 counter（回归测试含"时间戳 gauge 不得计入"）。
+
+⇒ 截至本轮，本机 L2 档的状态是：**存得进（32 GB / 8.3 GB）、从未命中、从未搬回**。
+机制解释见 §6.3：`C ≈ 1.12 M < P = 1.207 M` 且驱逐是纯 LRU ⇒
+CPU 档里的块**必然同时还在 GPU 池里** ⇒ 查表永远在 GPU 侧满足（只差 7%，不是差 6 倍）。
+
+### 判定「L2 是否真的能工作」的正确实验：人为把 GPU 池压小
+
+用 `--num-gpu-blocks-override`（本机 0.30.0 支持，`arg_utils.py:1277`）把 P 压到 < C，
+再跑「建档 → 挤池(>P) → 重发」：此时"显存里没了、CPU 档里还在"第一次在数学上成立，
+若命中则 `external_prefix_cache_hits_total > 0` 且 `kv_offload_load_bytes > 0`。
+窗口 5/6/7 用的就是这套（`FN_MAXLEN=65536` + `--num-gpu-blocks-override 80` ⇒ P=79 437 token < C≈1.12 M）。
+窗口 5/6 因探针**单位 bug**（文档大 6 倍、顶穿 65536 上限吃 400）未测成；
+窗口 7 修好后**结构判据全绿但引擎卡死**（见 §6.3）。
+
+### 窗口脚本的三条加固（2026-09-27 窗口 7 事故后，每条都有实机教训）
+
+1. **`launch.env` 先备份、回滚/中断时还原**（`LAUNCH_BAK`，缺省
+   `/home/ll/deploy/kvoff-c8-launch.env.bak`）。它是**看门狗与控制台下次启动的唯一参数源**；
+   测试档留在盘上 = 生产被静默起成测试参数。本次实际发生（生产一度跑在
+   `max-model-len 65536 + 80 blocks`），已恢复（`1048576`、无 override）。
+2. **`systemctl --user` 必须显式给 `XDG_RUNTIME_DIR` / `DBUS_SESSION_BUS_ADDRESS` 并校验生效**
+   （新 `wd()` 助手打印 state）。旧写法 `systemctl --user stop ... 2>/dev/null || true`
+   **静默失败**：窗口开头"停看门狗"没生效，看门狗整场每 35 s 照跑，收尾时与窗口回滚
+   **抢启动**，还把 `launch.env` 覆盖成"只有一行头"（生产参数靠 inner 缺省兜住，属运气）。
+3. **探针套 `timeout`（`PROBE_TIMEOUT` 缺省 900 s）+ 卡死取证**（`stall_evidence()`：
+   统计 `Waiting>0` / `Deferred>0` / 零吞吐行数并回显最后 3 行吞吐）。
+   引擎卡死时探针会一直等（`post` 超时 1800 s），旧版窗口会空转十几分钟且结果里看不出是卡死还是慢。
 
 
-## 6.3 容量口径实测与策略方向（2026-09-27，含外部参考）
+## 6.3 容量口径实测与策略方向（2026-09-27 实测 + 同日勘误，含外部参考）
 
-### 实测：CPU 档有效容量 ≈1/6 GPU 池 ⇒ 这就是「零外部命中」的机制性原因
+### ⚠️ 先看勘误：**「CPU 档只有 0.20 M token / 340–400 KB per token」是错的（已撤回）**
 
-窗口 3（64 GiB，c8 未打包）用 `usage_perc` 标定：一篇 20 000 token 全新文档只占
-`Δusage=10%` ⇒ **C ≈ 0.20 M token**，而 GPU 池 **P = 1.207 M token**（差 6 倍）；
-折合 **≈340–400 KB/token**（GPU 侧仅 32 KB/token）。
+错在**分母**：窗口 3 标定时用「名义 20 000 token」当存储量，而探针实际发出去的是
+**≈120 000 token** 的文档（`ratio` 是 token/字符，`make_doc` 早期按"词数"折算 ⇒ 文档大 6 倍）。
+于是 `bpt = Δstore / 20000` 把每 token 字节数放大了 6 倍、`C` 缩小了 6 倍。
 
-⇒ `挤池 ≤ C − 建档` 与 `挤池 > P` 无法同时成立 ⇒ **回载必然 miss**。
-这正是 09-29 那轮生产观测（KVOFF 跑 21.5 h、`external_prefix_cache_hits_total=0`）的
-机制解释——**档位从未超过 GPU 池**，它只能当"更慢的前缀缓存"用。
+**校正后的真值（同一次实测数据、只换分母）**：
 
-差距的两个来源（窗口 4 带 c9 复测后已定量）：
-1. **配置口径的每块字节偏大**：`cpu_page_size_per_worker` 用 `worker_kv_bytes_per_block`（本机
-   rank0 90.0 MB/块、rank1 80.2 MB/块），而真实要写的只有 **43.6/43.8 MB/块**（省 45~51%）。
-   **c9（已实现并实测）**：worker 改为发布真实字节（`Σ tensor.page_size × blocks_per_chunk`），
-   `row_stride` 270→**87.40 MB**、`num_chunks` 403→**786**（`create_worker` 的区段溢出断言兜底）。
-2. **≈6× 的「每 chunk 覆盖 token 数」损失（主因，未修）**：容量是**字节受限**的——
-   `C = 区域字节 ÷ 每 token 实存字节`。窗口 3/4 独立标定都得到 **C≈0.20 M token @64 GiB**
-   （`bpt≈340–400 KB/token`），而打包使 row 减半、chunk 翻倍后 **C 不变** ⇒ 说明限制不在 chunk 数。
-   反推：同一篇 20 000 token 文档消耗 78 个 chunk（=10%×786）⇒ **≈256 token/chunk**，
-   而一个块是 1616 token ⇒ **约 6.3 个 chunk 才覆盖 1 个块的范围**，≈ offload 分组数（5 组）+ 部分块开销。
-   ⇒ 上游 chunk 记账对**多组混合模型**是「每个（组 × 块范围）收一整行」，这是 12× 总差距的主因。
-   修它需要动上游 chunk/分组记账语义，风险高、本轮不做。
+| 项 | 值 | 口径 |
+|---|---|---|
+| CPU 档每 token 字节 | **≈35.7 KB/token** | `bpt = Δbyte / Δusage × C`（usage_perc 标定） |
+| **CPU 档容量 C @64 GiB** | **≈1.12 M token** | `C = 标定 token / Δusage_perc`（实测 bpt=35 690.1 B/token） |
+| GPU 池 P（大池位） | 1.207 M token | `kv_cache_size_tokens` |
+| GPU 侧每 token | 27–32 KB/token | `kv_cache_size_tokens` ÷ 池字节 |
+
+⇒ **C 与 P 同量级（仅差 ~7%），不是"差 6 倍"**。
+"需要 ~400 GB 内存才压过 GPU 池"的推论、以及"L2 结构性不可能有收益"的结论**一并撤回**。
+
+那 09-29「跑 21.5 h、外部命中恒 0」怎么解释？——是**纯 LRU + C < P**：
+只要 `C ≤ P`，任何被 CPU 档留住的块**必然同时还在 GPU 池里**（CPU 档只是 GPU 驱逐的副产品），
+查表在 GPU 侧就满足了，永远轮不到 CPU 回载。**不是容量小 6 倍，而是小 7%**——
+这 7% 的差距让"零命中"从"结构性不可能"变成"刚好差一点"，方向完全不同。
+
+### 为什么之前会得出 6 倍：探针的两个 bug（都已修 + 回归测试）
+
+1. **单位 bug**：`make_doc` 按词数折算 ⇒ 文档大 6 倍（目标 5 000 实际 30 285 token 等）；
+   已改为按**字符预算** `target_chars = tokens / ratio`（实测 5 000→5 009、46 000→46 014 token）。
+2. **假字节 bug**：早期按子串累加 `kv_offload*` 指标，把 `*_created`（unix 时间戳 gauge
+   ≈1.79e9）当成字节 ⇒ 凭空造出「CPU→GPU 回载 5.37 GB」。真值恒为 0；
+   已改为只累加真字节 counter，并加"时间戳 gauge 不得计入"的回归测试。
+
+### 窗口 7（64 GiB 公共区 + `--num-gpu-blocks-override 80`，P=79 437 token < C）：结构性全绿，探针被卡死打断
+
+| 判据 | 结果 |
+|---|---|
+| c8 worker 侧公共区协商（两 rank 各一行） | PASS |
+| 调度器侧采纳公共区 | PASS：`decision=['shared']` 各 rank 行数 `[786, 786]` ⇒ `num_chunks=786` |
+| c1 offload 分组三侧一致 | PASS（`distinct=1`，环形分组已剔） |
+| 共享区创建恰 1 次 / barrier 后 unlink | PASS（created=1、unlinked=1） |
+| cudaHostRegister / 零断言 / 零熔断 | PASS（failed=0、ae=0、fuse=0） |
+| **物理钉住 = 配置值** | PASS：`df used`=68 899 057 664 B vs 配置 68 719 476 736 B，**比值 1.00** |
+| 两 rank 均分配 CPU KV 缓冲 | PASS |
+| store（GPU→CPU） | 真实落地 8.299 GB（c9 打包后 rank0 89.98→43.64 MB、rank1 80.15→43.75 MB） |
+| **探针（hits>0 且 CPU→GPU>0 且验证码复述）** | **FAIL：退出码 143** —— 不是探针报错，是**引擎卡死**（见下） |
+
+**卡死现场（这是本轮最有价值的发现）**：探针发完 55 000 token 建档请求后，第二个请求
+（挤池文档）进入 `Waiting: 1 / Deferred: 1`，然后**引擎日志整段静默 9 分 30 秒**
+（11:20:00 → 11:29:30，引擎 logger 本就每 10 s 一行 ⇒ 说明 EngineCore 主循环被阻塞），
+恢复后 `Avg prompt throughput: 17.0 tokens/s`（正常 5 200+）、`Running: 0 / Waiting: 1`，
+GPU KV 占用 0.0%，`kv_offload_cpu_cache_usage_perc` 钉在 0.2404 不再增长。
+时间上**紧跟着一次 store 突发**（11:19:40–11:19:50 单区间 store 651 MB、累计 1.98 GB）。
+
+**机制指向**：`store` 方向仍是上游 **C++ 批量拷贝（`cuMemcpyBatchAsync`）**——
+启动日志自证：`c7: 仅 CPU->GPU(load) 方向强制 Triton swap 内核；store 方向保持上游 C++ DMA`。
+而 09-24 的 c7 定案正是「`cuMemcpyBatchAsync` 与 PP2 NCCL-P2P 并发会冻结 compute 流」。
+c8 之前那条路径是**崩**（`error 1` / Xid31）；c8 把宿主缓冲正确注册（`cudaHostRegister` 无失败）后，
+同样的争用变成了**卡**。⇒ 卡死与 c8 布局无关，与 **store 的拷贝 API** 有关（待证）。
+
+### 下一步的三条候选（按性价比排序）
+
+1. **先做归因 A/B（不改代码、最快）**：同一 `--num-gpu-blocks-override 80` 但 `FN_KVOFF=0`，
+   跑同一探针。若也卡 ⇒ 卡死与小 GPU 池本身有关（测量手法不成立），KVOFF 无罪；
+   若不卡 ⇒ 坐实是 store 路径。
+2. **换更温和的压力档**：80 块 = 79 437 token 只剩 GPU 池的 6.6%，属极端档；
+   命中只需 `P < C`，用 `--num-gpu-blocks-override 700`（≈695 k token < C≈1.12 M）即可，
+   同时把 `P+B < F ≤ C−B` 的窗口放大到可操作。
+3. **c10 候选：store 也走 Triton SM 内核**（c7 当年只改 load，理由是"私有路径缓冲未注册、
+   Triton 会 MMU fault"；**c8 的公共区已 `cudaHostRegister` 成功**，该前提已不成立）。
+   这是唯一能绕开 `cuMemcpyBatchAsync` 的现成手段，但上游在 `gpu_worker.py` 显式写着
+   "GPU→CPU 不要用 Triton"，须带 Xid 监控做受控实验。
 
 ### 目标口径（与外部同类机一致）
 
-宿主档 = **1.0× GPU 池**（本机 ≈1.2 M token；理想 32 KB/token 需 ~39 GB，按 40 KB/token 需 ~48 GB）。
-要达到它，c9 打包必须生效（预计 64 GiB → 1.4–2.1 M token）。
+宿主档 = **1.0× GPU 池**（本机 ≈1.2 M token）。按校正后的 35.7 KB/token，1.25 M token
+只需 **≈45 GiB**（64 GiB 档已够，无需 400 GB）——与外部参考机 `--hicache-ratio 1.0` 的容量铁律一致。
 
 ### 若容量仍不够：走「策略」而不是「堆容量」
 
@@ -541,6 +626,14 @@ bash /home/ll/deploy/start-flash-next-w4a16.sh           # ③ 起旧栈（注�
    低优先（不影响正确性，只影响可调性）。
 8. **把现行「双字段 + 哨兵」栈路由做成幂等重打脚本**并收入本仓库：目前唯一的重打脚本
    `redirect-console-watchdog-0300.py` 是已被取代的首版做法，误用会废掉旧栈回滚能力（见 §9 末）。
+9. 【KVOFF 归因 A/B，最高优先】同 `--num-gpu-blocks-override 80` 但 `FN_KVOFF=0` 跑同一探针：
+   若也卡 ⇒ 卡死与小 GPU 池本身有关（"压小池逼命中"的测量手法不成立），KVOFF 无罪。
+   不改代码，只换一次启动参数，~20 分钟（含冷启）。
+10. 【KVOFF 换温和压力档】命中只需 `P < C`，用 `--num-gpu-blocks-override 700`（≈695 k token
+    < C≈1.12 M）即可，比 80 块（只剩 6.6%）温和得多，`P+B < F ≤ C−B` 的可操作窗口也更大。
+11. 【c10 候选】把 **store 方向**也切到 Triton SM 内核：c7 当年只改 load，理由是"私有路径
+    缓冲未注册、Triton 会 MMU fault"；c8 的公共区已 `cudaHostRegister` 成功 ⇒ 该前提不成立。
+    上游 `gpu_worker.py` 显式写着 "GPU→CPU 不要用 Triton"，故须带 Xid 监控做受控实验。
 
 **并行会话风险（本机长期事实）**：`/home/ll/deploy/server.js` 会被其它会话基于旧基线整文件写回。
 本次 22:02:44 就发生过一次——重定向与判据补丁被抹掉、控制台被重启。判据：改完记下 md5，

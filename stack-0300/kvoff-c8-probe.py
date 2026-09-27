@@ -74,23 +74,45 @@ def offload_bytes(m):
     return res
 
 
-def offload_bytes_labeled(base):
-    """按标签精确取 CPU_to_GPU / GPU_to_GPU 方向的字节累计。"""
+# 【口径铁律】只累加**真字节 counter**，绝不按子串扫 "kv_offload"：
+#   2026-09-27 实测踩坑 —— 旧实现把 `kv_offload_*_created`（**unix 时间戳 gauge**，
+#   ≈1.79e9）与直方图桶一起加进来，凭空造出"5.37 GB CPU→GPU 回载"的假象，
+#   而真值 `kv_offload_total_bytes_total{transfer_type="CPU_to_GPU"}` 一直是 0。
+_BYTE_COUNTERS = ("vllm:kv_offload_load_bytes", "vllm:kv_offload_store_bytes",
+                  "vllm:kv_offload_total_bytes_total")
+_FORBID = ("_created", "_time", "_size", "usage_perc", "_bucket")
+
+
+def _metric_lines(base):
     murl = re.sub(r"/v1/?$", "", base) + "/metrics"
-    want = {"CPU_to_GPU": 0.0, "GPU_to_CPU": 0.0}
     try:
         with urllib.request.urlopen(murl, timeout=20) as r:
-            for line in r.read().decode().splitlines():
-                if line.startswith("#") or "kv_offload" not in line:
-                    continue
-                for k in want:
-                    if k in line:
-                        try:
-                            want[k] += float(line.rsplit(" ", 1)[-1])
-                        except ValueError:
-                            pass
+            return r.read().decode().splitlines()
     except Exception:
-        pass
+        return []
+
+
+def offload_bytes_labeled(base):
+    """按**指标名 + transfer_type 标签**精确取字节累计（load=CPU_to_GPU）。"""
+    want = {"CPU_to_GPU": 0.0, "GPU_to_CPU": 0.0}
+    for line in _metric_lines(base):
+        if line.startswith("#") or "kv_offload" not in line:
+            continue
+        name = line.split("{")[0].split(" ")[0]
+        if name not in _BYTE_COUNTERS or any(f in name for f in _FORBID):
+            continue
+        if name.endswith("load_bytes"):
+            k = "CPU_to_GPU"
+        elif name.endswith("store_bytes"):
+            k = "GPU_to_CPU"
+        else:
+            k = next((d for d in want if 'transfer_type="%s"' % d in line), None)
+            if k is None:
+                continue
+        try:
+            want[k] += float(line.rsplit(" ", 1)[-1])
+        except ValueError:
+            pass
     return want
 
 
@@ -125,15 +147,28 @@ def gpu_pool_tokens(base):
 
 
 def make_doc(idx, tokens, ratio, rng):
-    """构造约 tokens 个 token 的自然文本，内嵌唯一验证码。"""
+    """构造约 tokens 个 token 的自然文本，内嵌唯一验证码。
+
+    ⚠️ 单位铁律（2026-09-27 踩坑）：`ratio` 是 **token/字符**（calibrate_ratio 实测），
+    所以文档长度必须按**字符预算**生成：chars = tokens / ratio。
+    旧实现写的是 `tokens/ratio/12` 个"12 词块"（= tokens/ratio **个单词**），
+    把 ratio 当成了 token/单词 ⇒ 实际文档大 6 倍（target 5000 → 30285 token，
+    target 45000 → 270022 token），小池位测试里直接顶穿 max_model_len 吃 400。
+    """
     code = "".join(rng.choice(string.ascii_uppercase + string.digits) for _ in range(7))
     n = "CODE-%s-%04d" % (code, idx)
-    body = []
-    for i in range(int(tokens / ratio / 12) + 8):
-        body.append(" ".join(rng.choices(WORDS, k=12)))
-        if i == len(body) // 3:
-            body.append("THE VERIFICATION TOKEN IS %s END OF TOKEN." % n)
-    return n, " ".join(body)
+    target_chars = int(tokens / max(ratio, 1e-6))
+    parts, ln, i = [], 0, 0
+    while ln < target_chars:
+        w = " ".join(rng.choices(WORDS, k=12))
+        parts.append(w)
+        ln += len(w) + 1
+        i += 1
+        if i == 3:  # 验证码埋在开头 1/3 处（与旧版一致）
+            tag = "THE VERIFICATION TOKEN IS %s END OF TOKEN." % n
+            parts.append(tag)
+            ln += len(tag) + 1
+    return n, " ".join(parts)
 
 
 def ask(endpoint, model, doc, question, max_tokens=64):
@@ -174,6 +209,9 @@ def main():
                          "正文空 → 复述判定假阴性（09-27 实测 256 不够）")
     ap.add_argument("--calib-tokens", type=int, default=20000,
                     help="容量自标定用的全新文档 token 数；0=跳过标定")
+    ap.add_argument("--max-prompt-tokens", type=int, default=0,
+                    help="单请求 prompt 上限（=实例 max-model-len − 回答预算）。>0 时自适应"
+                         "选参会把建档/挤池文档压到该值以内，否则小池位测试必吃 400")
     ap.add_argument("--shm-baseline-mb", type=float, default=248.0,
                     help="/dev/shm 非本区域占用（基线），用于反推共享区字节数")
     ap.add_argument("--auto", type=int, default=1,
@@ -244,10 +282,17 @@ def main():
                 out["calibration"]["cpu_capacity_tokens_est"] = int(C)
                 if args.auto and C > 0:
                     B = int((C - pool) / 2.6)
-                    B = max(60000, min(B, 200000, args.tokens))
+                    # 下限 15k：小池位测量（--num-gpu-blocks-override 压小 GPU 池）时
+                    # C-P 只有几万 token，固定 60k 下限会让约束无解、自适应用不起来。
+                    B = max(15000, min(B, 200000, args.tokens))
+                    if args.max_prompt_tokens:      # 小池位测试：不得顶穿 max-model-len
+                        B = min(B, max(15000, args.max_prompt_tokens))
                     Fmax = int(C - B)
                     F = int(min(Fmax, pool + B + max(int(0.12 * pool), 60000)))
                     nflush = max(1, int(round(F / B)))
+                    # 挤池必须真能挤出建档文档（F > P+B），至少 3 篇留余量
+                    if Fmax >= 3 * B and (nflush < 3 or B * nflush <= pool + B):
+                        nflush = 3
                     out["calibration"]["auto_plan"] = {
                         "doc_tokens": B, "flush_docs": nflush,
                         "flush_tokens": B * nflush,
