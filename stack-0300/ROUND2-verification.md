@@ -343,3 +343,64 @@ block table 对照——判定是「拷贝写错位置」还是「填的块不�
 
 ⇒ 下一轮的正确实验是 **换成 `SimpleCPUOffloadConnector`**（`VLLM_USE_SIMPLE_KV_OFFLOAD=1 --kv-offloading-size 64`），**不用我们那套 rt-patch #9**：
 判据 = 同一 prompt「本地算 vs 中途 flush 后再算」答案是否都正确（经典连接器就死在这一条）+ `SupportsHMA` 是否让 mamba 状态按块正确回载。
+
+---
+
+## 9. 【里程碑·第 10 轮】换成 `SimpleCPUOffloadConnector` 后，回载**语义正确** ✅
+
+第 8 节发现的官方新实现，实机验证**通过**（这是目标第一次真正跑通正确性）：
+
+### 9.1 启动方式
+
+```
+FN_EXTRA_ENV="VLLM_USE_SIMPLE_KV_OFFLOAD=1"
+FN_EXTRA_ARGS="--num-gpu-blocks-override 80 --kv-offloading-size 64"
+FN_KVOFF=0                     # 不启用经典 OffloadingConnector
+```
+
+日志判据：
+```
+Creating v1 connector with name: SimpleCPUOffloadConnector ...
+SimpleCPUOffloadConnector: role=SCHEDULER, per_rank=32.00 GB, world_size=2, mode=eager, backend=cpu, disk=none
+SimpleCPUOffloadWorker [CPU]: 1 tensors, 1483 CPU blocks (32.00 GB)     # 两个 rank 各 32GB
+SimpleCPUOffloadScheduler: Allocating 1483 offload blocks (32.00 GB, mode=eager, backend=cpu)
+```
+
+### 9.2 必需的一处补丁（c14，已并入 patches-extra/dsh_kvoff_rt.py）
+
+不改的话**首个请求即崩**（EngineCore AssertionError）：
+```
+manager.py:835 _select_eager_blocks_to_store → resolve_block_hashes
+  → kv_cache_utils.py:2881  assert block_size % hash_block_size == 0
+环形组 group_size=8 vs hash_block_size=1616 ⇒ 断言炸
+```
+上游已用 `has_positionally_stable_blocks=False` 跳过 mamba(align) 组，但 QSA 环形组落到默认
+manager（基类恒 True）。**c14**：给 `single_type_kv_cache_manager` 里所有该属性加一层
+「spec.prefix_cacheable 为 False ⇒ False」——语义一致（这正是环形组 `prefix_cacheable=False`
+的含义），且只在 `VLLM_USE_SIMPLE_KV_OFFLOAD=1` 时生效，对经典连接器/生产零影响。
+
+### 9.3 正确性实测（同一实例，全部 `recalled=true`）
+
+| 探针 | prompt | 从 CPU 档装载 | 结果 |
+|---|---|---|---|
+| `kvoff-scale 6000` | 3,426 | 1,616 | fresh=`CODE-SC06-8080` ✓ / reload=`CODE-SC06-8080` ✓ |
+| `kvoff-scale 15000` | 8,408 | 6,464 | fresh ✓ / reload=`CODE-SC15-8123` ✓ |
+| `kvoff-verify`（含 3×60k 挤池） | 31,825 | **29,088（91%）** | fresh ✓ / **回载=`CODE-VF742-8160` ✓** / 禁外部 ✓ |
+
+`vllm:external_prefix_cache_hits_total` 累计 37,168 token；启动后 **0 条 ERROR/AssertionError**。
+对照：同样的 31.8k 用例在**经典连接器**下回载是 `duct Register Register…`（乱码）。
+
+### 9.4 磁盘层（用户关心的「KV 放硬盘」）在内建支持里
+
+`simple_cpu_offload_connector.py` 从 `kv_connector_extra_config` 读：
+`cpu_bytes_to_use` / `cpu_bytes_to_use_per_rank` / `disk_capacity_bytes`（缺省 100GiB）/ `disk_path` /
+`kv_offload_backend`（缺省 cpu）/ `lazy_offload`。
+⇒ NVMe 分层是现成开关，不需要另写补丁。
+
+### 9.5 结论与待办
+
+* **正确性这一关过了**（本模型 + PP2 + MTP4 + 65k 档）。
+* 待办：①生产档（1M/1.2M token GPU 池）验证与容量配比；②把 simple 卸载的参数写进
+  inner/wrapper/控制台预设（`VLLM_USE_SIMPLE_KV_OFFLOAD` 属非 `FN_*` 环境变量，需走
+  `FN_EXTRA_ENV`）；③可选：开启 disk 层做 NVMe 二级；④经典连接器那套 rt-patch（c1/c2/c6/c7/c8/c10/c11）
+  在 simple 路径下**不再需要**（保持不启用即可）。
