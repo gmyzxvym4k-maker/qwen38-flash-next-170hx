@@ -1,0 +1,11 @@
+[Unit]
+Description=Flash-Next W4A16 (18420) watchdog timer
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=fnx-18420-watchdog.service
+
+[Install]
+WantedBy=timers.target
