@@ -54,10 +54,10 @@ Qwen3.8-Flash-Next 不是普通 Transformer，它有三处"常规 vLLM 配方会
 | 项 | 当前生产值（2026-09-27 20:20 实跑快照） |
 |---|---|
 | served 模型名 | `qwen3.8-flash-next` |
-| 引擎 | **官方 vLLM 0.30.0**（torch 2.13.0+cu130 / flashinfer 0.6.18.post1）+ PYTHONPATH 运行时补丁（上游 8 hook + 本地 13 hook） |
+| 引擎 | **官方 vLLM 0.30.0**（torch 2.13.0+cu130 / flashinfer 0.6.18.post1）+ PYTHONPATH 运行时补丁（上游 8 hook + 本地 14 hook，含 #10 attrIdxs 修复，见 §1.1 末条） |
 | 并行 / 投机 | **PP2**（26,22）TP1 / **MTP4**；block 1616；mamba float32；CUDA 图 `FULL_AND_PIECEWISE` |
 | 上下文 | **1,048,576**（YaRN×4 副本） |
-| **KV 二级缓存** | **SimpleCPUOffloadConnector `--kv-offloading-size 96`（GiB，两 rank 各 48 GB 锁页）**；经典 OffloadingConnector（c1~c11）已退役 |
+| **KV 二级缓存** | **SimpleCPUOffloadConnector `--kv-offloading-size 96`（GiB，两 rank 各 48 GB 锁页）**，经 rt-patch #10 修复上游 attrIdxs 越界 UB 后启用；经典 OffloadingConnector（c1~c11）已退役 |
 | GPU KV 池 | **1,207,262 token / 776 块**（@1M 并发 1.15×） |
 | CPU 档容量 | blocks/rank=[2224,2157] → **≈348.6 万 token = 2.9× GPU 池** |
 | PLE 表 | 官方 cpu_offload **BF16 锁页 95.4 GiB**（旧栈 INT8/磁盘档在新栈无实现，见 stack-0300 README §4） |
@@ -87,6 +87,15 @@ Qwen3.8-Flash-Next 不是普通 Transformer，它有三处"常规 vLLM 配方会
   按自己流量画像决定。
 - **踩坑全录**（c1~c11 三轮攻关：假 0 命中、pending 悬挂、容量口径勘误、mamba 竞态、拷贝 API 冻结流…）：
   [`stack-0300/README-0300.md` §6.1~6.3](stack-0300/README-0300.md) + ROUND1/2/3 文档。
+- **segfault 根因定案与修复（rt-patch #10，2026-09-27 深夜）**：带二级缓存实例当日两次原生段错误
+  （17:38 / 20:38，均 Worker_PP1 猝死、栈仅 glibc pthread 帧、无 Xid 前导）——根因是上游
+  `vllm/v1/simple_kv_offload/cuda_mem_ops.py::copy_blocks` 把**单个 `c_size_t` 标量**当 `attrIdxs`
+  数组传给 `cuMemcpyBatchAsync`，驱动按契约读 `count` 个元素 ⇒ 标量之后全是堆上随机字节，
+  非零值即索引 `attrs[垃圾]` ⇒ 间歇性越界/段错误（上游 issue #53860 同判，本栈代码逐字命中；
+  此前经典连接器的 `error 1` 崩溃亦属同族 API 面）。修复=每次调用传 `np.zeros(cnt, uint64)`
+  零索引数组（语义不变，逐描述符仍用 attrs[0]），以 `patches-extra/dsh_simple_offload_rt.py`
+  运行时钩子落地，**功能（线程/流/事件排程/拷贝路径）零改动**；附带 src/dst 块数与负 id 入参加固。
+  回退开关 `DSH_SIMPLE_OFFLOAD_UPSTREAM=1`；自检 `selftest_simple_rt.py`。详见 docs/08 P59。
 
 ### 1.2 两代栈的关系
 

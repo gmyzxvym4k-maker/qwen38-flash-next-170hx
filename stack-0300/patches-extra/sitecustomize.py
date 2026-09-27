@@ -134,6 +134,19 @@ try:
     _PATCHES.update(dsh_kvoff_rt.PATCHES)
 except Exception as _kvexc:  # 加载失败绝不拖垮启动，但必须出声
     _log(f"dsh_kvoff_rt 加载失败（KV 二级缓存钩子未激活）：{_kvexc}")
+# --------------------------------------------------------------------------
+# rt-patch #10：SimpleCPUOffload copy_blocks attrIdxs 越界 UB 修复（2026-09-27
+# 两次 PP1 worker segfault 根因，上游 issue #53860）。只挂 cuda_mem_ops 一个
+# 模块；不开 --kv-offloading-size 时该模块不被导入，钩子天然惰性，对无二级缓存
+# 形态零影响。紧急回退：DSH_SIMPLE_OFFLOAD_UPSTREAM=1 ⇒ 补丁 no-op。
+# --------------------------------------------------------------------------
+try:
+    import dsh_simple_offload_rt
+
+    _PATCHES.update(dsh_simple_offload_rt.PATCHES)
+except Exception as _soexc:  # 加载失败绝不拖垮启动，但必须出声
+    _log(f"dsh_simple_offload_rt 加载失败（二级缓存 attrIdxs UB 未修复，segfault 可能复发）：{_soexc}")
+
 
 # 幂等哨兵：用 sys 模块属性，**不要用环境变量** —— 环境变量会被 vLLM 的 mp 子进程
 # 继承，子进程会误判"已加载"而跳过挂载（09-30 启动日志实测子进程打 "哨兵命中"）。

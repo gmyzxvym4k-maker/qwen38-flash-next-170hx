@@ -326,6 +326,34 @@
 - 高日志量下"取尾部 N 行找警告"会漂移漏检（实锤：死亡警告距文件尾 2230 行），
   行数窗口必须配时间戳校验（警告距今 ≤N 分钟）。
 
+### P59 SimpleCPU 二级缓存的间歇性原生 segfault：上游 attrIdxs 越界 UB（issue #53860）
+- 症状指纹（09-27 两次，17:38:35 / 20:38:30）：`!!!!!!! Segfault encountered !!!!!!!` →
+  `Worker proc VllmWorker-1 died unexpectedly (exit code: None)` → EngineDeadError → APIServer 退出；
+  **无 GPU Xid 前导、无 MCE、无 Python Traceback**，vLLM 自带 segfault handler 打的栈只有
+  glibc `pthread_create/start_thread` ⇒ 死在原生线程（后台 DMA copy loop 正是 such a thread）。
+  判别价值：与经典连接器的 Xid31 现场（P54/P55 族）、09-24 shm_broadcast 卡死型都能区分开。
+- 根因（读上游源码逐字命中，非猜测）：`copy_blocks()` 传给 `cuMemcpyBatchAsync` 的
+  `attrIdxs` 是 `ctypes.byref(params.attrs_idx)` —— **单个 `c_size_t` 标量**；而 CUDA Driver API
+  契约要求该参数是 `count` 个元素的数组（每个拷贝描述符一个属性索引，值 < numAttrs）。
+  驱动会读 `attrIdxs[0..cnt-1]`，越过 8 字节标量后取到的是堆上相邻随机字节，任何非零值都会
+  让驱动去索引 `attrs[垃圾]` ⇒ 未定义行为，间歇性崩溃、依赖堆布局（上游同判：观测到"in the wild"
+  的 segfault、nightly 上"自愈"消失——正是布局敏感 UB 的表现）。CUDA 侧 `num_attrs=1`，
+  attrIdxs 必然被消费，本崩溃面在 CUDA 上成立。
+- 修复（rt-patch #10，`patches-extra/dsh_simple_offload_rt.py`）：钩子替换 `copy_blocks`，
+  每次调用显式传 `np.zeros(cnt, dtype=np.uint64)`（全零 = 每描述符仍用 attrs[0]，与原实现期望
+  语义完全一致），另加 src/dst 块数相等与负 id 入参校验。**线程/流/事件排程/拷贝机制零改动**
+  ⇒ 二级缓存功能原样保留。回退开关 `DSH_SIMPLE_OFFLOAD_UPSTREAM=1`；离线自检
+  `selftest_simple_rt.py`（G1-G6，含 fresh-import 子进程验证绑定传导）。
+- 取证加固（同轮上线）：inner 脚本 `ulimit -c unlimited` + `core_pattern=/media/ll/data/cores/core.%e.%p.%t`
+  （落数据盘——worker RSS 上百 GB，落系统盘必写爆）。gdb 已就位。
+- 教训（方法论，长期有效）：
+  ① "开 X 功能就崩、关 X 就稳"是比读码更快的**功能级二分定位**——今天三次崩溃全落在带二级缓存
+  的实例上，直接把嫌疑钉死在 connector 的数据面；
+  ② ctypes 直调驱动 API 时，凡"数组指针 + count"型参数，逐个对照 API 文档的数组语义，
+  `byref(标量)` 冒充数组是最容易被"碰巧能跑"掩盖的 UB；
+  ③ 间歇性原生崩溃，先找上游 issue tracker 的同签名——本项目 30 秒命中 #53860，
+  比自建复现+core 分析快一个数量级。
+
 ---
 
 ## 附：已验证走不通的死路（别再试）
@@ -343,5 +371,6 @@
 | `read_ahead_kb=0` | 权重加载慢 10.9×（P28） |
 | TP2 代替 PP2 | 无 P2P 时每步约 192 次 all-reduce 走 host SHM，更慢 |
 | 经典 OffloadingConnector 在本模型常驻（含 c1~c11 全部修法） | hybrid mamba 活写竞态，回载不等价（P54），退役；用 SimpleCPUOffloadConnector |
+| SimpleCPU 二级缓存用上游原版 `copy_blocks`（未打 rt-patch #10） | attrIdxs 单标量冒充数组的越界 UB ⇒ 间歇 PP1 segfault（P59，上游 #53860） |
 | 「加大 pinned 到 >GPU 池」在 251 GB 内存机上硬做 | PLE 95 GB + 私有 pinned 1.56× 必超配，MCE 硬挂风险（P56） |
 | MTP6 / MTP1 在本档 | MTP6 触发 QSA ring 断言（P04）；MTP1 实测比 MTP4 慢 22% |
