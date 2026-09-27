@@ -465,3 +465,30 @@ FP8 PLE（v2）+ `FN_SIMPLE_OFFLOAD=64` + `FN_MAXLEN=131072` + `--num-gpu-blocks
 ① PLE 判据行出现 `Qwen4ExpPLEFp8EmbeddingMethod / weight_dtype=torch.float8_e4m3fn`；
 ② 启动耗时（对比 BF16 表的 ~5 分钟）；
 ③ `kvoff-scale` 的 fresh 与 reload 答案一致且 `external_hits_delta > 0`（真命中 CPU 档）。
+
+### 11.4 【结论·硬件封路】FP8 PLE 在 CMP 170HX（GA100/SM80）上不可用
+
+v2 产物格式**已正确**（PLE 判据行确实变成 `Qwen4ExpPLEFp8EmbeddingMethod,
+weight_dtype=torch.float8_e4m3fn`，不再报 shard 名字错误），但引擎在初始化期直接死于：
+
+```
+ValueError: type fp8e4nv not supported in this architecture.
+            The supported fp8 dtypes are ('fp8e4b15', 'fp8e5')
+```
+
+`fp8e4nv` = e4m3 NVIDIA 变体，是**编译器/内核层**报的 —— **GA100 没有 FP8 硬件支持**
+（这也是 09-14 就记录过「CMP 170HX 无 FP8 tensor core」的同一件事）。旧 chroot 栈的
+INT8+磁盘方案之所以能跑，是因为它在 **CPU 侧**反量化（ATen index_select + mul），
+而 0.30.0 的 FP8 PLE 走的是**设备侧**反量化 ⇒ 本卡无解。
+
+⇒ **PLE 表省内存这条路在 0.30.0 + 本卡上封死**（要省只能自己把旧栈的「INT8/磁盘 +
+CPU 侧反量化」加载器移植进 0.30.0 的 ngram_embedding，属另一件大工程）。
+
+### 11.5 但这不影响内存二级缓存：容量账重算，32~48GiB 档够用
+
+`SimpleCPUOffloadWorker [CPU]: N CPU blocks (X GB)` 是**每 rank** 的：
+* `--kv-offloading-size 64` ⇒ per_rank 32GB = **1483 CPU blocks**；生产 GPU 池 = 776 GPU blocks/rank
+  ⇒ 内存档 ≈ **1.9× GPU 池** ✓ 但内存账 95.4(PLE) + 79(权重) + 64(pinned) + 12 ≈ 250GB，压 251GB 太紧；
+* `--kv-offloading-size 48` ⇒ per_rank 24GB ≈ 1112 blocks ≈ **1.43× 池**，内存账 ≈ 234GB ✓ 推荐；
+* `--kv-offloading-size 32` ⇒ per_rank 16GB ≈ 740 blocks ≈ **0.95× 池**，账 ≈ 218GB，属保守档。
+⇒ **不需要 FP8 PLE 也能把档位开得比 GPU 池大**（48GiB 即 1.43×），这才是生产落点。
