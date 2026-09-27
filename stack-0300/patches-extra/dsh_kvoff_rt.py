@@ -891,27 +891,22 @@ def _patch_cpu_gpu_worker(m):
                         _log("dbg[xfer] 拷贝前指纹失败：%r" % (exc,))
             ok = orig_transfer_async(self, job_id, src_spec, dst_spec)
             if dbg_pre is not None:
-                # 判读：拷贝「前 vs 后」的 dst 指纹必须不同（否则这次拷贝没落地）；
-                #       拷贝后的 dst 指纹应等于 src 指纹（否则内容不对）。
+                # 【第 6 轮改法】不在这里读「拷贝后」——此刻拷贝还没跑完，而 copy 完成后
+                # 目标块可能立刻被 compute 流写，读出来的是别人的内容（前几轮的
+                # 「load 目标块 ≠ 源行、且逐轮随机」就是这个竞态）。改成登记到
+                # _dsh_pending_fp，等 get_finished() 里 end_event.query() 通过后再读一次快照。
                 try:
-                    dbg_post = _dsh_cap(self, src_spec, dst_spec)
-                    pre, sid, did, groups = dbg_pre
-                    post = {gi: (fs, fd, fa, fda) for gi, fs, fd, fa, fda in dbg_post[0]}
-                    direction = "store(GPU->CPU)" if self.gpu_to_cpu else "load(CPU->GPU)"
-                    for gi, fs, fd, fa, fda in pre:
-                        fs2, fd2, fa2, fda2 = post.get(gi, (None, None, None, None))
-                        _log(
-                            "dbg[xfer] #%d %s g=%d head src/src'=%s/%s dst/dst'=%s/%s "
-                            "FULL src/src'=%s/%s dst/dst'=%s/%s | head_dst_changed=%s "
-                            "head_ok=%s full_ok=%s"
-                            % (
-                                self.__dict__["_dsh_dbg_xfer"][0], direction, gi,
-                                fs, fs2, fd, fd2, fa, fa2, fda, fda2,
-                                fd != fd2, fs == fd2, fa == fda2,
-                            )
+                    pend = self.__dict__.setdefault("_dsh_pending_fp", {})
+                    if len(pend) < 32:
+                        pend[job_id] = (
+                            src_spec,
+                            dst_spec,
+                            dbg_pre[0],
+                            "store(GPU->CPU)" if self.gpu_to_cpu else "load(CPU->GPU)",
+                            self.__dict__["_dsh_dbg_xfer"][0],
                         )
                 except Exception as exc:
-                    _log("dbg[xfer] 拷贝后指纹失败：%r" % (exc,))
+                    _log("dbg[xfer] 登记待读快照失败：%r" % (exc,))
             return ok
 
         def wait(self, job_ids):
@@ -947,6 +942,36 @@ def _patch_cpu_gpu_worker(m):
                     time.sleep(0.002)
             return set()
 
+        # ---- 第 6 轮：拷贝完成后（end_event 已就绪）再读一次目标块快照 ----
+        orig_get_finished = H.get_finished
+
+        def get_finished(self):
+            results = orig_get_finished(self)
+            if not _dbg_on():
+                return results
+            try:
+                pend = self.__dict__.get("_dsh_pending_fp") or {}
+                for res in results:
+                    rec = pend.pop(getattr(res, "job_id", None), None)
+                    if rec is None:
+                        continue
+                    src_spec, dst_spec, pre, direction, idx = rec
+                    post = _dsh_cap(self, src_spec, dst_spec)
+                    pmap = {gi: (fs, fd, fa, fda) for gi, fs, fd, fa, fda in post[0]}
+                    for gi, fs, fd, fa, fda in pre:
+                        fs2, fd2, fa2, fda2 = pmap.get(gi, (None, None, None, None))
+                        _log(
+                            "dbg[xferDONE] #%d %s g=%d head src=%s dst_pre=%s dst_post=%s "
+                            "| FULL src=%s dst_pre=%s dst_post=%s | head_ok=%s full_ok=%s "
+                            "dst_changed=%s"
+                            % (idx, direction, gi, fs, fd, fd2, fa, fda, fda2,
+                               fs == fd2, fa == fda2, fd != fd2)
+                        )
+            except Exception as exc:
+                _log("dbg[xferDONE] 失败：%r" % (exc,))
+            return results
+
+        H.get_finished = get_finished
         H.transfer_async = transfer_async
         H.wait = wait
 
