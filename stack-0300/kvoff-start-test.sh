@@ -8,7 +8,7 @@ BASE=${BASE:-/home/ll/deploy/vllm-0300}
 ENVF=$BASE/launch.env
 OVR=${FN_OVERRIDES_FILE:-/home/ll/deploy/kvoff-c10-window.overrides}
 WLOG=${C10_WINDOW_LOG:-/home/ll/deploy/kvoff-c10-window.log}
-SUDO_PASS=${SUDO_PASS:?本副本已脱敏：先 export SUDO_PASS=<部署机 sudo 口令>}
+SUDO_PASS="${SUDO_PASS:?本副本已脱敏：先 export SUDO_PASS=<部署机 sudo 口令>}"
 
 [ -f "$ENVF" ] && { set -a; . "$ENVF"; set +a; }
 [ -f "$OVR" ] && { set -a; . "$OVR"; set +a; }
