@@ -285,12 +285,24 @@ bash /home/ll/deploy/start-flash-next-w4a16.sh           # ③ 起旧栈（注�
   no KV cache group could be identified as the draft model's.` —— 上游对 PP2+MTP 的
   保守提示，实测 `spec_decode_num_drafts_total` 正常递增、接受长度 2.77。
 
-## 9. 控制台与看门狗接线（09-26 已完成）
+## 9. 控制台与看门狗接线（09-26 完成；10-05 审计修订）
 
-**8889 控制台已指向本栈**（补丁脚本 `redirect-console-watchdog-0300.py`，幂等、marker 优先判重）：
+**8889 控制台已指向本栈**。09-26 首版补丁 `redirect-console-watchdog-0300.py`（幂等、marker 判重）
+把字段**整体改到新栈**；当晚已演进为可回滚的「**双字段 + 哨兵**」方案，下述为现行实现：
 
-- `SCRIPT_MODELS['qwen3.8-flash-next-w4a16']` 的 `script/inner/stopScript/log/envFile` 全部改到新栈，
+- `SCRIPT_MODELS['qwen3.8-flash-next-w4a16']` **同时保留两套字段**：`script/inner/stopScript`
+  （chroot 旧栈）与 `scriptNew/stopScriptNew`（官方 0.30.0）；由 `resolveStartScript()` /
+  `resolveStopScript()`（server.js:640 / 631）按 `DISABLED` 哨兵动态选——判据与看门狗
+  `fnx-18420-watchdog.sh` 同源，`touch /home/ll/deploy/vllm-0300/DISABLED` 即全线退回旧栈。
   键名保持不变 → 快启预设、代理路由、别名表零改动。
+- **`inner` 故意没有 `innerNew` 对应字段**：新栈 wrapper 的 `INNER` 缺省即
+  `$BASE/bin/flash-next-0300-inner.sh`（start-flash-next-0300.sh:18），而 spawn 侧以
+  `startScript === sm.script` 为守卫（server.js:8448 / 9284）——解析到新栈时 **envPrefix 为空**，
+  绝不把旧栈 inner 灌进新栈。若在这里补一个 `innerNew`，反而会引入
+  「新栈环境 + 旧栈 inner」的杂交命令（09-26 评审已识别）。
+- 新栈 wrapper 的参数透传是**动态**的：`compgen -e | grep -E '^FN_[A-Z0-9_]+$'`（仅排除
+  `FN_ENVFILE`），不再维护手写白名单——这是 09-26 `FN_GENCFG` 静默失效事故的根治
+  （旧栈手写白名单漏项会让弹窗字段静默不生效，本项目在 `FN_PLE_INT8`/`FN_KVOFF` 上累计踩过两次）。
 - 顺带修了一个**跨栈通用缺陷**：`scriptModelInstance()` 与 `findVllmPidByPort()` 的兜底判据写死
   `pgrep -f "[v]llm.entrypoints"`，只认 chroot 形态的 `-m vllm.entrypoints.cli.main serve`；
   新栈主进程 cmdline 是 `bin/vllm serve` → 判活恒假。后果不止日志面板回落 `vllm.log`，
@@ -303,6 +315,27 @@ bash /home/ll/deploy/start-flash-next-w4a16.sh           # ③ 起旧栈（注�
 - 端到端等价验证：`python3 /home/ll/deploy/plan_argv_check.py`（node vm 真跑 plan → inner dry-run
   → 与 `/proc/<pid>/cmdline` 逐 token 对账）。当前结论：`current-1m-mtp4-*` 预设与生产命令
   仅差一个显式 `--enable-chunked-prefill`（=0.30.0 默认值，无行为差异）。
+
+- **三层 `FN_*` 穷举对账（10-05）**：对 `plan → wrapper → inner` 逐层取变量集合做差集。结论——
+  wrapper 动态透传无缺口；`inner` 不串栈；长上下文三档链路完整（`maxModelLenLong` 1048576 /
+  `maxModelLen512` 524288 / `longCtxModelPath` / `longCtx512ModelPath` / `altModelPaths` 均在
+  `qwen3.8-flash-next-w4a16` 条目内，位于 `base` 块之后）；采样三处一致（inner `GENCFG_DEFAULT`
+  ≡ `SCRIPT_MODELS[..].base` ≡ 三个快启预设）。**唯一真缺口 = `FN_SCHED_POLICY`**：plan 在用户
+  选非 fcfs 时下发（server.js:828-829 `if (sp && sp !== 'fcfs') env.FN_SCHED_POLICY = sp;`），
+  而 inner 既不消费它、也没有对应的 `NOOP_NOTE_` 说明 → 落到「参数体检」的 UNKNOWN 分支，
+  只打一条 `[FN-0300] 警告：收到本脚本未实现的参数 FN_SCHED_POLICY`，引擎仍走 fcfs。
+- **接线做法与验证**：inner 在「控制台可关的三项」之后加
+  `if [ -n "${FN_SCHED_POLICY:-}" ]; then ARGS+=(--scheduling-policy "$FN_SCHED_POLICY"); fi`，
+  并把 `FN_SCHED_POLICY` 登记进 `CONSUMED`（从而不再进 UNKNOWN）。兼容性已核源码：
+  `AsyncScheduler(Scheduler)`（`v1/core/sched/async_scheduler.py:12`）只覆写
+  `_update_after_schedule` / `_update_request_with_output`，waiting 队列与抢占的 policy 逻辑在基类
+  （`scheduler.py:194-204` `create_request_queue(self.policy)`、`746-759` 抢占排序），故
+  `--scheduling-policy priority` 与 `--async-scheduling` 可共存、无需互斥；合法值
+  `Literal["fcfs","priority"]`（`config/scheduler.py:22`），`fcfs` 即引擎缺省、plan 不下发。
+  三重验证：`bash -n` 通过；**不带该变量时 dry-run argv 与改动前逐字节相同（缺省路径零漂移）**；
+  带 `=priority` 时参数落到 argv 且 UNKNOWN 警告消失、`FN_PLE_INT8/LOC` 的 `NOOP_NOTE` 说明保持。
+  备份 `bin/flash-next-0300-inner.sh.bak-schedpolicy-1005`，幂等补丁 `tools/patch-schedpolicy-1005.py`
+  （`--revert` 可回滚）。
 
 **看门狗 `fnx-18420-watchdog` 已改为与栈无关并已 re-arm**（`systemctl --user is-active` = active）：
 
@@ -324,9 +357,29 @@ bash /home/ll/deploy/start-flash-next-w4a16.sh           # ③ 起旧栈（注�
 5. 决定 `/etc/security/limits.d/99-vllm-memlock.conf` 的去留（systemd 下无效，留着误导人）。
 6. 弹窗 UI 上「PLE 表加载（精度/位置）」两个字段对本栈无效（inner 会打
    `[FN-0300] 忽略 …` 并说明原因；官方 0.30.0 只有 BF16 锁页一档）。
-   「CPU KV 二级缓存」字段自 1005（§6.1）起已真实生效，缺省关。
+   「CPU KV 二级缓存」字段自 1005（§6.1）起已真实生效，缺省关；
+   「调度策略」字段自 10-05（§9）起已真实生效（此前只落一条「未实现」警告）。
+7. `FN_KVOFF_WAIT_TIMEOUT`（c6 熔断的有界等待，缺省 15 s）inner 已消费、但 plan 不下发 →
+   弹窗无字段，只能 envfile 手填。要暴露需按 §9 的多层清单同步改 index.html 与 server.js。
+   低优先（不影响正确性，只影响可调性）。
+8. **把现行「双字段 + 哨兵」栈路由做成幂等重打脚本**并收入本仓库：目前唯一的重打脚本
+   `redirect-console-watchdog-0300.py` 是已被取代的首版做法，误用会废掉旧栈回滚能力（见 §9 末）。
 
 **并行会话风险（本机长期事实）**：`/home/ll/deploy/server.js` 会被其它会话基于旧基线整文件写回。
 本次 22:02:44 就发生过一次——重定向与判据补丁被抹掉、控制台被重启。判据：改完记下 md5，
-隔几分钟复查；丢了就用 `redirect-console-watchdog-0300.py` 重打（幂等，会先核锚点再动手）。
+隔几分钟复查。
+
+⚠️ **被写回后重打，勿再用 `redirect-console-watchdog-0300.py`**：它是 09-26 22:05 的**首版做法**
+（把 `script/inner/stopScript/envFile/log` 整体替换成新栈路径，见该脚本 `:81-87`），
+在现行「双字段 + 哨兵」方案上重打会把 `script` 也改成新栈路径 → 旧栈字段丢失、
+`DISABLED` 哨兵回滚随之失效。自查现行方案是否完整：
+
+```bash
+grep -n "function stack0300Active\|scriptNew:\|stopScriptNew:\|startScript === sm.script" \
+  /home/ll/deploy/server.js
+```
+
+应看到 `stack0300Active` 定义、`scriptNew:`/`stopScriptNew:` 各一处、`startScript === sm.script`
+两处（spawn 侧守卫）；缺哪类即被写回。恢复＝按本节上面三条重新实施，**本仓库尚未收该方案的
+幂等重打脚本**（见 §10 待办 8）。
 

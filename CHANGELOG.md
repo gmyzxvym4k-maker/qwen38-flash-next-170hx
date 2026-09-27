@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-10-05 — 控制台启动链路审计：`FN_SCHED_POLICY` 接线 + §9 纠偏
+
+- **审计结论**：`8889` 控制台 → 官方 0.30.0 的启动链路**已正确指向**（09-26 完成）。本次对
+  `plan → wrapper → inner` 三层做 `FN_*` 穷举对账，7 项健康：栈感知「双字段 + 哨兵」、
+  `inner` 不串栈（`startScript === sm.script` 守卫）、wrapper 动态透传（`compgen -e`）、
+  长上下文三档链路完整（`maxModelLenLong/512` 与两个 `longCtx*ModelPath` 均在条目内）、
+  采样三处一致、看门狗 enabled+active、三个 0.30.0 快启预设齐备。
+- **唯一真缺口已修**：`FN_SCHED_POLICY` —— plan 在用户选非 fcfs 时下发（`server.js:828-829`），
+  而 inner 既不消费也无 `NOOP_NOTE_` → 只打一条「收到本脚本未实现的参数」警告、引擎仍走 fcfs。
+  已在 inner 接线 `--scheduling-policy` 并登记进 `CONSUMED`
+  （`stack-0300/inner-flash-next-0300.sh`，备份 `.bak-schedpolicy-1005`，
+  幂等补丁 `tools/patch-schedpolicy-1005.py`，`--revert` 可回滚）。
+  验证三重：`bash -n` 通过 / **缺省路径 dry-run argv 与改动前逐字节相同（零漂移）** /
+  `=priority` 落到 argv 且警告消失。兼容性核过源码：`AsyncScheduler` 继承 `Scheduler` 的
+  waiting 队列与抢占逻辑，故与 `--async-scheduling` 可共存。
+- **文档纠偏**：`stack-0300/README-0300.md` §9 原写「`script/inner/stopScript/log/envFile`
+  全部改到新栈」，那是 09-26 首版做法；生产当晚已演进为可回滚的双字段方案。§9 已改写，
+  并**标注 `redirect-console-watchdog-0300.py` 已过时——在现行方案上重打会把 `script` 也改成
+  新栈路径、废掉 `DISABLED` 回滚**（新增 §10 待办 8：补一个与现行方案一致的幂等重打脚本）。
+- 生产零影响：该变量只在用户显式选非 fcfs 时进 argv，缺省（fcfs）路径逐字节不变；
+  实例全程 health=200，未重启。
+
 ## 2026-10-05 — KV 二级缓存移植回官方 0.30.0 新栈（rt-patch #9）
 
 - 背景：2026-09-26 生产接管方已迁至官方 vLLM 0.30.0（宿主 venv + PYTHONPATH 运行时补丁，
