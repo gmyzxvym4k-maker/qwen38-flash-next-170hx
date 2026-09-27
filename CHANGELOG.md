@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-09-27 深夜 — rt-patch #11：二级缓存 segfault 根治 + 生产真值快照刷新（v1.1.2）
+
+- **P59 误诊更正（P60 入档）**：当日三次间歇 segfault（17:38 / 20:38 / 21:51）的"attrIdxs 单标量
+  越界"结论被证伪——按 cuMemcpyBatchAsync 契约 `attrsIdxs` 长度=numAttrs（本栈=1），上游标量传参
+  本就合法，rt-patch #10 系 no-op（打满 #10 的实例 21:51 仍崩，core=`cuda-EvtHandlr.7142`、
+  栈全在 libcuda）。真根因=**批量 API 本身在本机驱动 610.43.03 + CMP 170HX 定制固件上不稳定**：
+  纯 ctypes 探针 60 次内复现段错误；逐块 `cuMemcpyAsync` 压测 2000 轮 ×16 块 ×64KB（33.5 GB）零错误。
+- **rt-patch #11（生产现行）**：`patches-extra/dsh_simple_offload_rt.py` 整版升级，copy_blocks
+  改逐块 `cuMemcpyAsync` 同流入队（地址算式与批量版逐字节等价、事件/线程模型零改动，
+  二级缓存功能保留）。A/B 开关 `DSH_SIMPLE_BATCH=1`（回批量路径，会崩，仅取证）/
+  `DSH_SIMPLE_OFFLOAD_UPSTREAM=1`（不打钩）。
+- **自检体系 v11**：`selftest_simple_rt.py` 重写为纯 CPU mock 的 G1-G4（挂载幂等 / 地址算式对照 /
+  入参防御 / 开关行为），全绿；真机端到端另跑双向+乱序+浸泡 2000 轮全 PASS。
+- **inner 新增 core dump 取证链**（`ulimit -c unlimited` + `core_pattern=/media/ll/data/cores/…`，
+  强制落数据盘）——本次根因判定即靠该 core + gdb 完成。
+- **生产真值快照刷新（2026-09-27 23:11）**：`tools/live-cmdline-0300.txt` / `live-env-0300.txt` /
+  `live-launch.env` 三件套改读自 #11 上线后实例（pid 464646，22:24 就绪）。快照时点运行 40 分钟、
+  **已越过历史崩溃窗（26~59 分钟）**：external hits 2,526.8 万 token / 外部命中率 91.6%，
+  零 segfault、零 Xid，8889 控制台识别正常（18420 / GPU 0+1）。
+- README-0300 §11 标题/引擎行/累计行同步为 #11 现行态；docs/08 死路表该行改写（批量 API 整体进死路）。
+
 ## 2026-09-27 晚 — 生产定版发布：内存二级缓存 96 GiB 常驻（v1.1.0）
 
 - **当前生产形态首次完整入仓**（此前仓库主体是旧 chroot 栈）：官方 vLLM 0.30.0 运行时补丁栈 +

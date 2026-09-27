@@ -112,6 +112,19 @@ MEMLOCK=$(ulimit -l)
 # 顺序：上游目录在前，本地扩展在后 —— 上游 _chain_stock_sitecustomize() 会按 sys.path
 # 跳过自己目录、加载第一个外部 sitecustomize.py，即 patches-extra/sitecustomize.py。
 export PYTHONPATH="$RT_DIR:$RT_EXTRA${PYTHONPATH:+:$PYTHONPATH}"
+# ---- segfault 取证链（0927 rt-patch#10 配套）：允许 core dump，复发可直接 gdb bt ----
+# PLE 表+offload 档在 251GB 机器上，worker core 可能上百 GB：落数据盘（1.5T 空闲），
+# 绝不落系统盘。core_pattern 全局唯一，写前比对避免重复写。
+CORE_DIR=/media/ll/data/cores
+mkdir -p "$CORE_DIR" && chmod 1777 "$CORE_DIR" 2>/dev/null
+ulimit -c unlimited 2>/dev/null || true
+DESIRED="$CORE_DIR/core.%e.%p.%t"
+if [ "$(cat /proc/sys/kernel/core_pattern 2>/dev/null)" != "$DESIRED" ]; then
+  echo "$DESIRED" > /proc/sys/kernel/core_pattern 2>/dev/null \
+    && echo "[FN-0300] core_pattern -> $DESIRED (ulimit -c=$(ulimit -c))" >&2 \
+    || echo "[FN-0300] core_pattern 设置失败（忽略，不影响服务）" >&2
+fi
+
 export VLLM_RT_PATCHES=1
 
 # ---------------------------------------------------------------- PLE（Engram）
