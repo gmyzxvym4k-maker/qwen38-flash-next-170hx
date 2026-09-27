@@ -189,6 +189,13 @@ ARGS=(
 if [ "${FN_PREFIX_CACHE:-1}" = "0" ]; then ARGS+=(--no-enable-prefix-caching); else ARGS+=(--enable-prefix-caching); fi
 if [ "${FN_CHUNKED:-1}" = "0" ]; then ARGS+=(--no-enable-chunked-prefill); else ARGS+=(--enable-chunked-prefill); fi
 if [ "${FN_ASYNC:-1}" = "0" ]; then ARGS+=(--no-async-scheduling); else ARGS+=(--async-scheduling); fi
+
+# 调度策略（1005 补）：plan 在用户选非 fcfs 时下发 FN_SCHED_POLICY，此前本脚本不消费
+# → 弹窗选「优先级」只落一条"未实现"警告、引擎仍走 fcfs。AsyncScheduler 继承 Scheduler
+# 的 waiting 队列与抢占逻辑（async_scheduler.py:12 仅覆写 _update_after_schedule /
+# _update_request_with_output），故与 --async-scheduling 兼容，无需互斥。
+# 合法值 Literal["fcfs","priority"]（config/scheduler.py:22）；fcfs 即引擎缺省，不下发。
+if [ -n "${FN_SCHED_POLICY:-}" ]; then ARGS+=(--scheduling-policy "$FN_SCHED_POLICY"); fi
 # 【与旧栈的 argv 偏离】
 #  · 不下发 -cc.splitting_ops：旧栈那 18 项是为了把自研 ple_mmap_lookup/ple_gds_lookup 请出
 #    计算图；官方 0.30.0 的 CompilationConfig._attention_ops（config/compilation.py:772）已
@@ -257,7 +264,7 @@ FN_MAXLEN FN_MAXLEN_EFF FN_PORT FN_SERVED FN_TP FN_PP FN_PP_PARTITION FN_DTYPE F
 FN_SEQS FN_GPUMEM FN_BLOCK FN_MBTOKENS FN_MOE FN_EP FN_EAGER FN_ENFORCE_EAGER FN_SPEC \
 FN_PREFIX_CACHE FN_CHUNKED FN_ASYNC FN_SEED FN_GENCFG FN_CHATKWARGS FN_CACHE_ROOT \
 FN_LOGLEVEL FN_CUDA_VISIBLE_DEVICES FN_EXTRA_ARGS FN_EXTRA_ENV FN_DRY_RUN \
-FN_KVOFF FN_KVOFF_BYTES FN_KVOFF_WAIT_TIMEOUT "
+FN_KVOFF FN_KVOFF_BYTES FN_KVOFF_WAIT_TIMEOUT FN_SCHED_POLICY "
 NOOP_NOTE_FN_CPU_OFFLOAD_GB="FN_KVOFF=1 时用 FN_KVOFF_BYTES（字节数）指定容量，本变量未接"
 NOOP_NOTE_FN_PLE_INT8="官方 0.30.0 只有 BF16 锁页一档，INT8/磁盘驻留是旧镜像自研加载器（README-0300.md §3）"
 NOOP_NOTE_FN_PLE_LOC="$NOOP_NOTE_FN_PLE_INT8"
