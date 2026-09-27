@@ -269,6 +269,21 @@ if [ -n "${FN_EXTRA_ENV:-}" ]; then
   for kv in $FN_EXTRA_ENV; do export "$kv"; done
 fi
 
+# ------------------------------------------------ 内存二级缓存（官方 simple 实现）
+# 【2026-09-27 定版】经典 OffloadingConnector（FN_KVOFF=1）对本模型的 hybrid 递归状态
+# 回载语义不成立（详见交付仓库 stack-0300/ROUND2-verification.md §7）；官方新实现
+# SimpleCPUOffloadConnector（SupportsHMA，专为 hybrid 设计）实测正确（§9）。
+# 用法：FN_SIMPLE_OFFLOAD=<GiB>（两 rank 合计），或控制台「内存二级缓存(GB)」字段。
+if [ -n "${FN_SIMPLE_OFFLOAD:-}" ]; then
+  if [ "${FN_KVOFF:-0}" = "1" ]; then
+    echo "[FN-0300] 拒绝启动：FN_KVOFF=1（经典连接器）与 FN_SIMPLE_OFFLOAD 互斥，请只用后者" >&2
+    exit 1
+  fi
+  export VLLM_USE_SIMPLE_KV_OFFLOAD=1
+  ARGS+=(--kv-offloading-size "$FN_SIMPLE_OFFLOAD")
+  echo "[FN-0300] 内存二级缓存：SimpleCPUOffloadConnector，CPU 档 ${FN_SIMPLE_OFFLOAD} GiB（world_size 均分）" >&2
+fi
+
 # ---------------------------------------------------------------- 参数体检
 # 目标：任何「弹窗里能填、本脚本不消费」的 FN_* 都必须显式出声。
 # FN_PLE_INT8 / FN_KVOFF 在旧栈就是靠缺省值生效、切档静默失效（09-18 定版事故），
@@ -278,7 +293,7 @@ FN_MAXLEN FN_MAXLEN_EFF FN_PORT FN_SERVED FN_TP FN_PP FN_PP_PARTITION FN_DTYPE F
 FN_SEQS FN_GPUMEM FN_BLOCK FN_MBTOKENS FN_MOE FN_EP FN_EAGER FN_ENFORCE_EAGER FN_SPEC \
 FN_PREFIX_CACHE FN_CHUNKED FN_ASYNC FN_SEED FN_GENCFG FN_CHATKWARGS FN_CACHE_ROOT \
 FN_LOGLEVEL FN_CUDA_VISIBLE_DEVICES FN_EXTRA_ARGS FN_EXTRA_ENV FN_DRY_RUN \
-FN_KVOFF FN_KVOFF_BYTES FN_KVOFF_WAIT_TIMEOUT FN_KVOFF_SHARED \
+FN_KVOFF FN_KVOFF_BYTES FN_KVOFF_WAIT_TIMEOUT FN_KVOFF_SHARED FN_SIMPLE_OFFLOAD \
 FN_KVOFF_LAYOUT_TIMEOUT FN_KVOFF_LAYOUT_WINDOW FN_SCHED_POLICY "
 NOOP_NOTE_FN_CPU_OFFLOAD_GB="FN_KVOFF=1 时用 FN_KVOFF_BYTES（字节数）指定容量，本变量未接"
 NOOP_NOTE_FN_PLE_INT8="官方 0.30.0 只有 BF16 锁页一档，INT8/磁盘驻留是旧镜像自研加载器（README-0300.md §3）"
