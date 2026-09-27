@@ -1,4 +1,4 @@
-# snapshot 2026-09-27 21:20 CST (rt-patch #10 上线后，带 --kv-offloading-size 96)
+# 生产实跑真值快照 vLLM 0.30.0 栈 · 2026-09-27 23:11 +08:00 · /proc/464646 直读（rt-patch #11 上线后实例）
 /home/ll/vllm-env/bin/python
 /home/ll/vllm-env/bin/vllm
 serve

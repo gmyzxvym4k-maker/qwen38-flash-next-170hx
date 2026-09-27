@@ -715,24 +715,28 @@ grep -n "function stack0300Active\|scriptNew:\|stopScriptNew:\|startScript === s
 
 ---
 
-## 11. 生产定版（2026-09-27 20:20 快照）：内存二级缓存 96 GiB 常驻开启
+## 11. 生产定版（2026-09-27 23:11 快照）：内存二级缓存 96 GiB 常驻开启 + rt-patch #11
 
-> 本节是**当前真实运行态**的逐字记录。实例 19:34:40 拉起，至快照时刻无卡死、无新增 Xid。
-> 完整 argv / env 快照（从 `/proc/<APIServer>/cmdline`、`/proc/<APIServer>/environ` 直读）：
-> [`tools/live-cmdline-0300.txt`](tools/live-cmdline-0300.txt)、[`tools/live-env-0300.txt`](tools/live-env-0300.txt)。
+> 本节是**当前真实运行态**的逐字记录。实例 22:24 拉起（携带 rt-patch #11：二级缓存拷贝路径
+> 已由批量 `cuMemcpyBatchAsync` 换成逐块 `cuMemcpyAsync`，根治当日三次间歇 segfault，见
+> [docs/08 P60](../docs/08-pitfalls.md)），至快照时刻推理正常、无卡死、无新增 Xid、
+> `vllm:external_prefix_cache_hits_total` 持续增长（CPU 档真回载在工作）。
+> 完整 argv / env / launch.env 快照（从 `/proc/<APIServer>/cmdline`、`/proc/<APIServer>/environ` 直读）：
+> [`tools/live-cmdline-0300.txt`](tools/live-cmdline-0300.txt)、[`tools/live-env-0300.txt`](tools/live-env-0300.txt)、
+> [`tools/live-launch.env`](tools/live-launch.env)。
 
 ### 11.1 形态一览
 
 | 项 | 值 | 判据（怎么自己验） |
 |---|---|---|
-| 引擎 | 官方 vLLM **0.30.0**（宿主 venv py3.11，site-packages 零改动）+ `PYTHONPATH=<本目录>/patches:<本目录>/patches-extra` | `pip show vllm`；日志 `[rt-patch-extra] 本地扩展钩子已挂载` |
+| 引擎 | 官方 vLLM **0.30.0**（宿主 venv py3.11，site-packages 零改动）+ `PYTHONPATH=<本目录>/patches:<本目录>/patches-extra`（运行时补丁现行为上游 8 hook + rt-patch **#11**：二级缓存拷贝路径逐块 `cuMemcpyAsync`，绕开批量 API 间歇 segfault，见 docs/08 P60） | `pip show vllm`；日志 `[rt-patch-extra] 本地扩展钩子已挂载` + 每进程一条 `[dsh-simple-rt] ... #11` |
 | 并行/投机 | PP2（26,22）+ **MTP4**；block 1616；mamba float32；1M YaRN×4 | `/metrics vllm:cache_config_info` |
 | **内存二级缓存** | **SimpleCPUOffloadConnector，`--kv-offloading-size 96`（GiB，两 rank 均分 48 GB/rank）** | 日志 `SimpleCPUOffloadConnector: role=SCHEDULER, per_rank=48.00 GB` + `SimpleCPUOffloadWorker [CPU]: N CPU blocks (≈48 GB)` |
 | GPU KV 池 | **1,207,262 token / 776 块**（18.06 GiB，@1M 并发 1.15×） | 日志 `GPU KV cache size: 1,207,262 tokens` |
 | CPU 档容量 | blocks/rank = [2224, 2157] → min×1616 = **≈348.6 万 token = 2.9× GPU 池**（≈36.3 万 tok/GiB） | 日志 worker 行 + 换算 |
 | launch.env 钉法 | `FN_KVOFF=0`（经典退役）+ `FN_SIMPLE_OFFLOAD=96`；两者同开 inner 直接拒启 | `cat /home/ll/deploy/vllm-0300/launch.env` |
 | 回载收益（实测） | 挤池 >1.2M token 后重发：~100k prompt 命中 **97%**、~40k **93%**、~12k **80%**（零头=每请求末块 ≤1616 不入库）；验证码精准复述=内容无损 | `vllm:external_prefix_cache_hits_total` 增量 + `kvoff-accept.sh` |
-| 快照时刻累计 | external hits = **143,824 token**（运行 45 分钟）；本地前缀缓存累计命中 **88.8%**（22.65M/25.51M queries） | `curl :18420/metrics` |
+| 快照时刻累计（23:12，运行 40 分钟，已越过历史崩溃窗） | external hits = **2,526.8 万 token / 命中率 91.6%**（27.58M queries）；本地前缀缓存命中 **67.5%**（57.37M/84.95M）；零 segfault、零 Xid | `curl :18420/metrics` |
 | 内存账 | PLE BF16 锁页 95.4 GiB + CPU 档 96 GiB 常驻 + 引擎 ≈ 204 GB / 251 GB（free≈7、avail≈44） | `free -g`（按行号取，勿按中文标签） |
 
 ### 11.2 为什么是 Simple 而不是经典连接器（定版理由，细节见 ROUND1/2 文档）
