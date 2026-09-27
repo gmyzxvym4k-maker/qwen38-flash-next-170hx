@@ -221,3 +221,54 @@ dbg[sched]  req=…ab4819 prompt=18694 computed=0 -> 16160     （收敛到 10 �
    在 `_build_aligned_boundary_store_jobs` 打印 `boundary_tokens / hash_idx / src block id`，
    确认后修 key↔块配对（或 `_make_boundary_key` 的 `hash_idx`），再用 `kvoff-verify.py`
    一票判定（fresh 正确 **且** 回载正确 = 通过）。
+
+---
+
+## 7. 第 4 轮（设备级同步指纹）：store 无罪、load 不落地、边界嫌疑被推翻
+
+本轮把指纹改成 **拷贝前/后各打一次 + `torch.cuda.synchronize()`**（v1 用 `self.wait([job_id])`，
+事件尚未注册时它立即返回 ⇒ 读到的是拷贝前的旧值，之前的「GDN 行全 0」是这么来的假象；
+另修正了多组 job 的 id 取法：第 gi 组要用**第 `pos` 个** id 而不是一律 `ids[0]`）。
+
+### 7.1 store（GPU→CPU）：逐组字节精确 ✅
+
+```
+#1 store g=0 src/src'=2305843009213680610/2305843009213680610 dst/dst'=0/2305843009213680610 dst_changed=True src==dst'=True
+#2 store g=1 src=1241133990970385820 dst'=1241133990970385820  src==dst'=True
+#3 store g=2 src=1837575868171699818 dst'=1837575868171699818  src==dst'=True
+#5 store g=4 src=1859139792594929026 dst'=1859139792594929026  src==dst'=True
+```
+
+每个组都是「dst 由 0 变成 src、且等于 src」⇒ **store 的源选择与行布局都对**。
+
+### 7.2 load（CPU→GPU）：目标块内容 ≠ 源行内容 ❌
+
+```
+#1 load g=0 src=2305843009213680610(源行=store 写进去的值) dst'=1783450266022643288  src==dst'=False
+```
+
+即使 `FN_KVOFF_LOAD_CPP=1`（回载走**上游 C++** 而不是我们 c7 强制的 Triton）也同样不落地。
+⇒ **回载没有把数据写进"模型会去读的那些块"**；这与「本地缓存命中=正确答案、CPU 档回载=乱码」
+完全吻合（本地命中不需要这次拷贝）。
+
+### 7.3 「mamba 边界错位」假设被推翻 ✅（重要）
+
+新增 `dbg[boundary]` 打印 `_build_aligned_boundary_store_jobs` 的 hand-off 三元组：
+
+```
+req=…b45fb729 entries=[(0, 1, 6464), (1, 6, 6464), (2, 11, 6464), (3, 16, 6464)]   # 8469 token prompt
+req=…b3f7b575 entries=[(0, 55, 58176), (1, 56, 58176), (2, 57, 58176), (3, 58, 58176)]  # ~61k 挤池文档
+```
+
+每个请求每组**只有一个边界**，且就是「最后的 1616 对齐位置」（8,469→6,464；61k→58,176）；
+而重发时装载量 `cached` 恰好等于该边界（`cached=6464`）。
+⇒ **mamba 状态与注意力前缀是同一边界**，「状态比前缀靠前/靠后」的错位假设不成立。
+
+### 7.4 下一轮唯一要做的实验
+
+把 load 的**目标侧**查清：在 `update_state_after_alloc` 里打印
+`(group_idx, dst_block_ids, block_indices, num_external_tokens)`，并与请求实际的
+block table 对照——判定是「拷贝写错位置」还是「填的块不是模型要读的块」。
+辅助实验：用**自然句填充**（不要 `x x x`，会让模型退化成复读）把 prompt 补到
+恰好 `1616*N+1`，使回载覆盖 99.98% 的 prompt（无重算尾部），看输出是否恢复连贯——
+用于区分「整体装载错」与「装载/重算交界错」。
