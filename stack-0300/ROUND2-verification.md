@@ -404,3 +404,34 @@ manager（基类恒 True）。**c14**：给 `single_type_kv_cache_manager` 里�
   inner/wrapper/控制台预设（`VLLM_USE_SIMPLE_KV_OFFLOAD` 属非 `FN_*` 环境变量，需走
   `FN_EXTRA_ENV`）；③可选：开启 disk 层做 NVMe 二级；④经典连接器那套 rt-patch（c1/c2/c6/c7/c8/c10/c11）
   在 simple 路径下**不再需要**（保持不启用即可）。
+
+---
+
+## 10. 第 12 轮：把 simple 卸载接成「一等开关」+ 生产档验收脚本
+
+### 10.1 inner 脚本新增 `FN_SIMPLE_OFFLOAD=<GiB>`
+
+```bash
+# bin/flash-next-0300-inner.sh（备份 .bak-simple-offload）
+if [ -n "${FN_SIMPLE_OFFLOAD:-}" ]; then
+  [ "${FN_KVOFF:-0}" = "1" ] && { echo "[FN-0300] 拒绝：与经典连接器互斥" >&2; exit 1; }
+  export VLLM_USE_SIMPLE_KV_OFFLOAD=1
+  ARGS+=(--kv-offloading-size "$FN_SIMPLE_OFFLOAD")
+fi
+```
+`VLLM_USE_SIMPLE_KV_OFFLOAD` 是**非 `FN_*`** 环境变量（wrapper 只透传 `FN_*`），所以必须由
+inner 自己 export —— 这一步不做，控制台/脚本都点不亮 simple 卸载。
+已登记进 `CONSUMED`（参数体检不再报警）。干跑验证：
+`FN_SIMPLE_OFFLOAD=32 FN_DRY_RUN=1 bash bin/flash-next-0300-inner.sh` ⇒ 出现
+`[FN-0300] 内存二级缓存：SimpleCPUOffloadConnector，CPU 档 32 GiB` 且 argv 带 `--kv-offloading-size 32`。
+
+### 10.2 生产档验收脚本 `kvoff-accept.sh`（抗 ssh 超时/外部干扰取证）
+
+一键：停看门狗 → 停实例 → 生产档（inner 缺省 1M/YaRN×4/block1616/MTP4）+ simple 卸载 32GiB
+→ 等 health 200 → 跑 `kvoff-churn.py`（N×116k token 挤池，足以搅翻 1.2M token 的大池）
+→ 打印连接器判据/外部命中/近 20 分钟 <EXTERNAL_HOST> 登录次数 → 后台恢复生产（含看门狗）。
+全程追加写 `kvoff-accept.result`，任何时刻 ssh 断了也能事后取证。
+
+> 背景：第一次生产档验收在 12 篇挤池的第 12 篇时被**外部进程 SIGTERM**（<EXTERNAL_HOST>
+> 10 秒内登录 3 次；日志签名 `KeyboardInterrupt("terminated")` + EngineCore `RuntimeError("cancelled")`），
+> 不是引擎自身故障 —— 因此脚本把外部登录计数也一并留档。
