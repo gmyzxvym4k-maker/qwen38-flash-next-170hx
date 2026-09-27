@@ -538,6 +538,31 @@ CPU 档里的块**必然同时还在 GPU 池里** ⇒ 查表永远在 GPU 侧满
 **实例启动期间绝不覆盖补丁文件**：`scp` 非原子，worker 在启动早期 import `patches-extra/*.py`，
 覆盖瞬间可能被读到半截文件。改补丁要在无实例启动时做。
 
+## 6.4 segfault 根因与 rt-patch #10：attrIdxs 越界 UB 修复（2026-09-27）
+
+SimpleCPUOffloadConnector 生产档（96 GiB）soak 当日两次原生段错误（17:38:35 / 20:38:30，
+Worker_PP1 猝死，栈仅 glibc pthread 帧，无 Xid/MCE/Python 异常）。定位=上游 issue
+[vllm-project/vllm#53860](https://github.com/vllm-project/vllm/issues/53860)：
+`vllm/v1/simple_kv_offload/cuda_mem_ops.py::copy_blocks` 用 `ctypes.byref(单个 c_size_t)`
+冒充 `attrIdxs` 数组传给 `cuMemcpyBatchAsync`；驱动按契约读 `count` 个 size_t ⇒ 标量之后
+全是堆相邻随机字节，非零即索引 `attrs[垃圾]` ⇒ 布局依赖的间歇性 UB/段错误。
+
+- **修复**：`patches-extra/dsh_simple_offload_rt.py`（rt-patch #10）替换 `copy_blocks`，
+  每次调用传 `np.zeros(cnt, uint64)` 零索引数组（语义与原期望完全一致），另加块数相等/负 id
+  入参校验。线程、流、事件排程、DMA 拷贝机制零改动 ⇒ **二级缓存功能原样保留**。
+- **挂载**：`patches-extra/sitecustomize.py` 并入 `PATCHES`；钩子只挂
+  `vllm.v1.simple_kv_offload.cuda_mem_ops` 一个模块，不开 `--kv-offloading-size` 时天然惰性。
+  幂等哨兵=模块属性 `_dsh_attridxs_fixed`。回退开关 `DSH_SIMPLE_OFFLOAD_UPSTREAM=1`。
+- **验证**：离线自检 `selftest_simple_rt.py`（G1 挂钩幂等 / G2 attrIdxs 零数组+描述符逐值 /
+  G4 入参加固 / G5 回退开关 / G6 copy_backend 绑定传导，G5/G6 用 fresh-import 子进程——
+  `importlib.reload` 不清命名空间，测不出新进程语义）；上线判据=启动日志每个进程一条
+  `[dsh-simple-rt] ... attrIdxs 单标量→count 元素零数组` + `SimpleCPUOffloadWorker [CPU]` 块数
+  + `external_prefix_cache_queries_total` 递增；soak 监控（kvoff-soak-monitor.sh）持续记录
+  ext_hits/xid/health 到 `kvoff-soak.log`。
+- **取证加固**：inner 脚本 `ulimit -c unlimited` + `core_pattern=/media/ll/data/cores/core.%e.%p.%t`
+  （worker RSS 上百 GB，core 必须落数据盘）；gdb 已装。若再次 segfault，直接
+  `gdb <python3.11> core.* -batch -ex bt` 拿原生栈。
+
 ## 7. 回滚
 
 新栈出问题就整条丢掉 PYTHONPATH 概念、直接复活旧栈（旧文件全部未动）：
@@ -745,8 +770,10 @@ grep -n "function stack0300Active\|scriptNew:\|stopScriptNew:\|startScript === s
 | 文件 | 机器路径 | 用途 |
 |---|---|---|
 | `patches/sitecustomize.py` | `vllm-0300/patches/sitecustomize.py` | 上游运行时补丁入口（8 处 hook，正源公开仓库 `CyrilCN/qwen38-flash-170hx-patches`，本副本含 09-27 FP8-PLE 加载契约修正） |
-| `patches-extra/sitecustomize.py` | `vllm-0300/patches-extra/sitecustomize.py` | 本地扩展入口（#8 mm-warmup 跳过 + #9 挂 dsh_kvoff_rt） |
+| `patches-extra/sitecustomize.py` | `vllm-0300/patches-extra/sitecustomize.py` | 本地扩展入口（#8 mm-warmup 跳过 + #9 挂 dsh_kvoff_rt + #10 挂 dsh_simple_offload_rt） |
 | `patches-extra/dsh_kvoff_rt.py` | 同名 | 经典连接器移植层（c1~c11；现已退役但保留代码，缺省惰性零影响，总闸 `DSH_KVOFF_RT_DISABLE=1`） |
+| `patches-extra/dsh_simple_offload_rt.py` | 同名 | SimpleCPUOffload attrIdxs 越界 UB 修复（§6.4，上游 #53860）；回退 `DSH_SIMPLE_OFFLOAD_UPSTREAM=1` |
+| `patches-extra/selftest_simple_rt.py` | 同名 | #10 离线自检（G1-G6，PYTHONPATH=patches:patches-extra 跑） |
 | `fnx-18420-watchdog.sh` + `systemd/fnx-18420-watchdog.{service,timer}` | `/home/ll/deploy/…`、`~/.config/systemd/user/…` | 30s 探活自愈；**自愈安全模式会剥离 offload 档位**（防崩溃循环），带档自愈加回需手工重放 `launch.env` |
 | `kvoff-accept.sh` / `kvoff-churn.py` / `kvoff-soak-monitor.sh` | `/home/ll/deploy/…` | 验收 / 挤池判据 / 每 5 分钟 soak 记录（health·KV 水位·外部命中·Xid·内存） |
 | `tools/live-cmdline-0300.txt` / `tools/live-env-0300.txt` | —— | 生产实跑真值快照（2026-09-27 20:20） |
