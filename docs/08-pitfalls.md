@@ -354,6 +354,37 @@
   ③ 间歇性原生崩溃，先找上游 issue tracker 的同签名——本项目 30 秒命中 #53860，
   比自建复现+core 分析快一个数量级。
 
+### P60 【更正 P59】attrIdxs 是误诊；根因=批量 cuMemcpyBatchAsync API 本身在本机驱动上不稳定，正解=逐块 cuMemcpyAsync（rt-patch #11）
+- **P59 的根因判断错了，勿采信**。09-27 打上 rt-patch #10（attrIdxs 改 count 元素零数组）的实例
+  （21:06 就绪）仍在 21:51 同签名 segfault（core：`cuda-EvtHandlr.7142`，栈全在 libcuda，无
+  Xid/MCE/Python 帧），当日第三次崩溃。三次都发生在带二级缓存的实例、时间尺度一致（26~59 分钟），
+  无 offload 实例稳定 ⇒ 功能级二分把嫌疑钉在 connector，但 attrIdxs 这条具体假设被证伪。
+- **契约重读**（cuda.h 本机实测两处原型 + cuda-python 绑定 `inspect.signature` = 8 参、无 failIdx；
+  driver API 文档原话："attrs 和 attrsIdxs 必须同长，长度由 **numAttrs** 指定"）：
+  `attrsIdxs` 是「每个 attr 项对应的起始块索引」数组，长度 = **numAttrs**（本模型 numAttrs=1），
+  上游传 `byref(c_size_t(0))`（1 个元素）**本就合法**——#10 把它换成 `np.zeros(count)` 是
+  no-op，所以打了照崩。P59 里"驱动读 attrIdxs[0..count-1] 越界"不成立。
+- **真正的根因**：`cuMemcpyBatchAsync`（批量 API）在本机驱动 **610.43.03 + CMP 170HX 定制固件**
+  上间歇性原生 segfault——与 09-23 经典连接器同一 API 面的 `cuMemcpyBatchAsync error 1`、
+  09-24 的卡死同族。用 vLLM 同款取符号方式（`cuGetProcAddress("cuMemcpyBatchAsync",12080)`）
+  实测该符号在本机是 **9 参含 failIdx** 版；无论按 8 参还是 9 参调用，批量路径都会间歇炸
+  （纯 ctypes 探针 60 次即段错误退出），而**逐块 `cuMemcpyAsync` 离线压测 2000 轮 ×16 块 ×64KB
+  （33.5 GB）零错误**，pinned H2D 吞吐 3975 MB/s（达标）。
+- **修复（rt-patch #11，`patches-extra/dsh_simple_offload_rt.py` 整版升级）**：钩子把 `copy_blocks`
+  换成逐块 `cuMemcpyAsync`（同 `params.stream_handle` 上入队），彻底绕开批量 API 的宿主端描述符数组 /
+  属性索引 / 完成回收机制。地址算式与批量版逐字节等价，store/load 语义、事件排程、线程模型、连接层
+  零改动 ⇒ **二级缓存功能原样保留**。挂载自检：双向 + 乱序映射 + 2000 轮浸泡 全 PASS；上线后
+  `vllm:external_prefix_cache_hits_total` 正常增长（二级缓存真命中）。
+- **A/B 回退开关**：`DSH_SIMPLE_BATCH=1` ⇒ 退回 #10 批量行为（已知会崩，仅取证）；
+  `DSH_SIMPLE_OFFLOAD_UPSTREAM=1` ⇒ 完全不打钩（上游原码）。
+- **教训（方法论，长期有效）**：
+  ① "上游 issue 有同签名"≠"根因相同"——#53860 谈的是 attrIdxs 数组语义，我未验证本机契约就照抄，
+  方向跑偏一轮；**照抄外部修复前，必须用本机头文件/绑定把涉及的 API 签名与数组语义逐字核一遍**；
+  ② 判"数组参数该多长"要读文档原文（这里是 numAttrs 不是 count），不能望文生义；
+  ③ 间歇性原生崩溃，若"关功能稳、开功能崩"，最稳的止血是把该功能依赖的**具体系统调用**换成
+  久经考验的等价原语（批量→逐块 async memcpy），而不是继续在可疑参数上打补丁；
+  ④ 最小可复现探针（纯 ctypes、脱开 vLLM）是判定 API 稳定性的金标准，比 core 分析快且可量化。
+
 ---
 
 ## 附：已验证走不通的死路（别再试）
@@ -371,6 +402,6 @@
 | `read_ahead_kb=0` | 权重加载慢 10.9×（P28） |
 | TP2 代替 PP2 | 无 P2P 时每步约 192 次 all-reduce 走 host SHM，更慢 |
 | 经典 OffloadingConnector 在本模型常驻（含 c1~c11 全部修法） | hybrid mamba 活写竞态，回载不等价（P54），退役；用 SimpleCPUOffloadConnector |
-| SimpleCPU 二级缓存用上游原版 `copy_blocks`（未打 rt-patch #10） | attrIdxs 单标量冒充数组的越界 UB ⇒ 间歇 PP1 segfault（P59，上游 #53860） |
+| SimpleCPU 二级缓存用批量 `cuMemcpyBatchAsync`（上游原版 `copy_blocks`，以及 rt-patch #10 的 attrIdxs 零数组"修复"） | 间歇 PP1 segfault（运行 26~59 分钟即崩）。attrIdxs 越界是**误诊**（P59，见 P60 更正）：按契约 `attrsIdxs` 长度=numAttrs，原标量本就合法，#10 实为无操作。真正正解 = rt-patch #11 改逐块 `cuMemcpyAsync`，彻底绕开批量 API（P60） |
 | 「加大 pinned 到 >GPU 池」在 251 GB 内存机上硬做 | PLE 95 GB + 私有 pinned 1.56× 必超配，MCE 硬挂风险（P56） |
 | MTP6 / MTP1 在本档 | MTP6 触发 QSA ring 断言（P04）；MTP1 实测比 MTP4 慢 22% |
