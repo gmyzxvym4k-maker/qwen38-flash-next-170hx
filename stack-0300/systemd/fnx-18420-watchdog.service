@@ -1,0 +1,12 @@
+[Unit]
+Description=Flash-Next W4A16 (18420) watchdog
+After=default.target
+
+[Service]
+Type=oneshot
+# oneshot 主脚本退出时，systemd 默认 KillMode=control-group 会清理整个 cgroup，
+# 把刚 spawn 的 wrapper/vLLM 一起杀掉（2026-09-24 实锤：看门狗 12:26:52 发起启动后
+# 进程立即消失、launch.env mtime 未变、日志零输出，导致每 60s 空转一次）。
+KillMode=process
+ExecStart=/home/ll/deploy/fnx-18420-watchdog.sh
+TimeoutStartSec=600
