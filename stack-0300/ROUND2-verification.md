@@ -294,3 +294,37 @@ block table 对照——判定是「拷贝写错位置」还是「填的块不�
       避开并发写；这能给出 load 是否真的把行内容写进目标块的**确定性**答案；
    b) 自然句填充把 prompt 补到恰好 `1616*N+1`，让回载覆盖 99.98%（无重算尾部），
       判断问题是"整体装载错"还是"装载/重算交界错"。
+
+### 7.6 第 6 轮：把快照挪到"拷贝完成后"，缺陷锁定到 **mamba/GDN 状态回载**
+
+1. **新诊断 `dbg[xferDONE]`**：在 worker 的 `get_finished()`（`end_event.query()` 已通过）里
+   对刚完成的 job 打一次快照，避开"拷贝还没跑完"的读。结果：
+
+```
+#8 load g=4 head src=1670906557403536246 dst_pre=858775443939331979 dst_post=1670906557403536246 | head_ok=True full_ok=True
+#8 load g=4 head src=1004204176743227098 dst_pre=604128206416349686 dst_post=1004204176743227098 | head_ok=True full_ok=True
+#8 load g=0/1/2 … head_ok=False full_ok=False（逐轮不同组合）
+```
+
+   ⇒ **全注意力组（g=4）的回载逐次字节精确**；mamba/GDN 组（g=0/1/2）读数不稳定。
+2. **为什么不稳定的原因找到了**：mamba 状态块是**活的**——请求一进入 decode 就每步更新它，
+   所以我"拷贝完成后"读到的已经是模型后续写进去的状态，不是回载进去的那份。
+   ⇒ 这类块**无法用事后快照验证**（g=4 的注意力 KV 是只读的，所以稳定且对得上）。
+3. 由此得到的确定结论：
+   * store（含 mamba 组）**字节精确** ✓（store 方向行是静态的，快照可信）；
+   * 回载的**注意力 KV 字节精确** ✓；
+   * ⇒ **缺陷只在 mamba/GDN 状态的恢复环节**（要么回载没落到模型读的状态块，要么
+     CoW hand-off 给的状态不是"该边界的状态"）。
+4. **精确长度实验被证伪**：`kvoff-exact2.py` 用随机词填充把 prompt 补到 `1616*N+1`
+   （实测 prompt 6,467 / tail 3 token），但**连"全新请求"那一问都退化成复读**
+   ⇒ 这类填充 prompt 本身就超出模型的稳定区，"答案对不对"不能再当判据
+   （自然文本的 kvoff-needle/scale 才是可用判据：fresh 正确、回载乱码）。
+5. **下一轮两个候选（按性价比）**：
+   a) **V2 runner + `--mamba-cache-mode all`**：0.30.0 源码里 `mamba cache mode 'all'`
+      被列为 V1 runner 的 unsupported feature（`config/vllm.py:2878`）⇒ all 模式需要
+      `VLLM_USE_V2_MODEL_RUNNER=1`。all 模式给**每个块边界**做状态 checkpoint，
+      hand-off 就能覆盖"装载边界"这个位置（当前 align 模式每请求只有 1 个边界）。
+      注意本模型可能 `supports_mamba_prefix_caching=False`（会静默降级回 align），
+      需先确认/补丁。
+   b) 调度器侧打印 `(group_idx, dst_block_ids, block_indices, num_external_tokens)`
+      并在随后几步打印该请求 mamba 组的实际状态块 id，判定"回载块 ≠ 模型读的块"。
