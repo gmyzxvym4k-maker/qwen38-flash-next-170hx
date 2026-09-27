@@ -3,12 +3,19 @@
 > 这是一套**已经在生产上跑着的**服务的完整复刻件：推理端点 `http://<部署机>:18420/v1`，
 > 模型 `qwen3.8-flash-next`（176B 总参 / 约 6B 激活的 MoE + PLE n-gram 嵌入 + GDN 线性注意力混合架构），
 > 跑在两张 64 GB 的 **NVIDIA CMP 170HX**（GA100 die，SM80，矿卡解锁）上，用 **PP2 + MTP4**，
-> 上下文 **1M token**，decode 稳态 **90~130 tok/s**，前缀缓存命中率 **91%**。
+> 上下文 **1M token**，decode 稳态 **90~130 tok/s**，前缀缓存命中率 **89~91%**。
 >
-> 本仓库包含：镜像获取脚本、**22 个 vLLM 补丁（逐条带根因说明）**、启动/停止/看门狗脚本、
-> PLE 表离线 INT8 量化器、长上下文副本生成器、一键体检脚本，以及 **40+ 条踩坑记录**。
+> **当前生产 = 官方 vLLM 0.30.0 运行时补丁栈，并已开启「KV 缓存内存二级层」
+> （GPU 显存 → 宿主内存 96 GiB，`SimpleCPUOffloadConnector`，实测被挤出显存的前缀 80~97% 由内存档回载）**——
+> 复刻入口 [`stack-0300/`](stack-0300/README.md)，权威文档 [`stack-0300/README-0300.md`](stack-0300/README-0300.md) **§11 生产定版**。
+> 本仓库主体（`patches/` 22 补丁组 + `docs/01~09`，本文 §2 起）是上一代 chroot 定制镜像栈的复刻件，
+> 保留为回滚路线，补丁闭环验证最完整（§2 的图景与命令都是旧栈的）。
 >
-> 最后同步生产机状态：**2026-09-23**（所有数值为该日实测，非引用）。
+> 本仓库包含：两代栈的启动/停止/看门狗脚本、运行时补丁（site-packages 零改动）与 **22 个 vLLM 补丁
+> （逐条带根因说明）**、**内存二级缓存的验收/挤池/soak 工具链与三轮攻关记录**、PLE 表离线 INT8 量化器、
+> 长上下文副本生成器、一键体检脚本，以及 **50+ 条踩坑记录**。
+>
+> 最后同步生产机状态：**2026-09-27 20:20**（当前生产栈真值快照，读自 `/proc/<APIServer>`，非引用）。
 
 ---
 
@@ -29,7 +36,72 @@ Qwen3.8-Flash-Next 不是普通 Transformer，它有三处"常规 vLLM 配方会
 
 ---
 
-## 1. 最终形态一览
+## 1. 当前生产形态：官方 vLLM 0.30.0 + 内存二级缓存（2026-09-26 起）
+
+```
+客户端 ──OpenAI 兼容 API──► :18420 (host 0.0.0.0)
+   │
+   └─ 宿主 venv（python3.11，vLLM 0.30.0，site-packages 零改动）
+        PYTHONPATH = stack-0300/patches : stack-0300/patches-extra   ← 运行时补丁注入点
+        └─ vllm serve /media/ll/data/models-1m/Qwen3.8-Flash-Next-W4A16-AutoRound-1M ...
+             ├─ EngineCore
+             ├─ Worker_PP0 → GPU0（层 1~26）
+             ├─ Worker_PP1 → GPU1（层 27~48 + lm_head + MTP 草稿 + 采样）
+             ├─ PleOffloadWorker（CPU 侧 n-gram 查表，BF16 锁页 95.4 GiB）
+             └─ SimpleCPUOffloadConnector（KV 二级层：宿主内存 96 GiB 锁页，后台线程 DMA 回载）
+```
+
+| 项 | 当前生产值（2026-09-27 20:20 实跑快照） |
+|---|---|
+| served 模型名 | `qwen3.8-flash-next` |
+| 引擎 | **官方 vLLM 0.30.0**（torch 2.13.0+cu130 / flashinfer 0.6.18.post1）+ PYTHONPATH 运行时补丁（上游 8 hook + 本地 13 hook） |
+| 并行 / 投机 | **PP2**（26,22）TP1 / **MTP4**；block 1616；mamba float32；CUDA 图 `FULL_AND_PIECEWISE` |
+| 上下文 | **1,048,576**（YaRN×4 副本） |
+| **KV 二级缓存** | **SimpleCPUOffloadConnector `--kv-offloading-size 96`（GiB，两 rank 各 48 GB 锁页）**；经典 OffloadingConnector（c1~c11）已退役 |
+| GPU KV 池 | **1,207,262 token / 776 块**（@1M 并发 1.15×） |
+| CPU 档容量 | blocks/rank=[2224,2157] → **≈348.6 万 token = 2.9× GPU 池** |
+| PLE 表 | 官方 cpu_offload **BF16 锁页 95.4 GiB**（旧栈 INT8/磁盘档在新栈无实现，见 stack-0300 README §4） |
+| 冷启动 | 约 **8 分钟**（就绪判据 `/health` 200） |
+| decode | K4 中位 **96.6 tok/s**（历史 K5 档 123.6，档位不同勿混比）；prefill ≈8,300~8,900 tok/s |
+| 前缀缓存命中率 | 本地累计 **88.8%**；外部（内存档）回载命中运行 45 分钟即 **143,824 token** |
+| 采样缺省（实跑） | `temperature 1.0, top_p 0.95, top_k 20, min_p 0, presence_penalty 0, repetition_penalty 1.0` + `reasoning_effort=xhigh`（09-27 回到 HF 原生；09-21 的 0.6 系可用 `FN_GENCFG` 下发） |
+| 自愈 | `fnx-18420-watchdog.{service,timer}`（30s 探活；自愈时**剥离 offload 档位**防崩溃循环，带档回归需手工重放 launch.env） |
+
+逐字快照：[`stack-0300/tools/live-cmdline-0300.txt`](stack-0300/tools/live-cmdline-0300.txt)、
+[`stack-0300/tools/live-env-0300.txt`](stack-0300/tools/live-env-0300.txt)。
+完整复刻六步：[`stack-0300/README-0300.md` §11.3](stack-0300/README-0300.md)。
+
+### 1.1 KV 缓存内存二级层（本次交付的主角）
+
+- **机制**：GPU 前缀缓存（1.2M token）装不下、但宿主内存档里还在的前缀，由
+  `SimpleCPUOffloadConnector` 在 prefill 前经后台线程 DMA 回载进显存，跳过重算。
+  CPU 档查找**复用核心** `cpu_coordinator.find_longest_cache_hit`，且显式跳过
+  `has_positionally_stable_blocks=False` 的组（mamba/GDN）——只卸载位置稳定的注意力组，
+  这是它与我们移植的经典连接器（在 hybrid 模型上因 mamba 活写竞态退役）的本质区别。
+- **实测收益**（挤池 >1.2M token 后重发，全由内存档回载）：~100k prompt 命中 **97%**、
+  ~40k **93%**、~12k **80%**（零头=每请求末块 ≤1616 不入库）；内嵌验证码精准复述=内容无损。
+- **代价**：96 GiB 物理常驻（机器 251 GB、有 MCE 硬挂史）。复发卡死/硬挂第一刀降 `FN_SIMPLE_OFFLOAD=48`
+  （命中率实测持平，只减存活时长），第二刀去掉该变量回无二级缓存定版。
+- **适用判断**：只对「前缀被挤出 GPU 池后又被重发」的负载有收益；若流量重复度低（历史 21.5h
+  观测 GPU 池自扛 ~90%、外部命中 0），不开它才是正解——开关是一等 `FN_SIMPLE_OFFLOAD=<GiB>`，
+  按自己流量画像决定。
+- **踩坑全录**（c1~c11 三轮攻关：假 0 命中、pending 悬挂、容量口径勘误、mamba 竞态、拷贝 API 冻结流…）：
+  [`stack-0300/README-0300.md` §6.1~6.3](stack-0300/README-0300.md) + ROUND1/2/3 文档。
+
+### 1.2 两代栈的关系
+
+chroot 旧栈（本文 §2 起）仍是**验证最完整的复刻件**：官方定制镜像 digest 锁定 + 22 补丁
+逐条双哈希闭环。新栈在同一端口替换生产后，旧栈通过哨兵文件
+`vllm-0300/DISABLED` 一键回滚（看门狗与控制台都识别）。要理解当前生产为什么长成这样，
+旧栈文档里的主机前置（docs/01）、模型获取与量化（docs/03/04）、长上下文副本（`make-longctx-copy.py`）
+**全部照常适用**。
+
+---
+
+## 2. 旧 chroot 栈最终形态一览（回滚路线）
+
+> 以下本节与 §3 的目录/命令描述的是**上一代 chroot 定制镜像栈**（vLLM v0.1.dev20073）。
+> 当前生产请以 §1 为准。
 
 ```
 客户端 ──OpenAI 兼容 API──► :18420  (host 0.0.0.0)
@@ -54,7 +126,7 @@ Qwen3.8-Flash-Next 不是普通 Transformer，它有三处"常规 vLLM 配方会
 | 上下文 | **1,048,576**（YaRN×4 副本，见 `scripts/make-longctx-copy.py`） |
 | CUDA 图 | `FULL_AND_PIECEWISE` + `capture_sizes [1,2,4,8,16,24,32,40]`（**不是** enforce-eager） |
 | PLE 表 | **INT8 逐行 scale**，48.3 GiB，当前驻留形态=内存堆 |
-| KV 二级缓存 | OffloadingConnector → 宿主内存 96 GiB（`FN_KVOFF=1`，需 c1~c5a 补丁） |
+| KV 二级缓存 | （旧栈实验形态）OffloadingConnector `FN_KVOFF=1` —— **已退役**，生产用 §1 的 Simple 方案 |
 | GPU KV 池 | **1,224,366 token**（18.16 GiB，@1M 上下文并发 1.17×） |
 | 显存 | 39.6 + 40.3 GiB / 卡（`gpu-memory-utilization 0.95`） |
 | 冷启动 | **约 4 分钟**（权重 78 s + PLE 挂载 + init engine 61 s） |
@@ -63,11 +135,11 @@ Qwen3.8-Flash-Next 不是普通 Transformer，它有三处"常规 vLLM 配方会
 | 前缀缓存命中率 | 累计 **91%** |
 | 采样缺省 | `temperature 0.6, top_p 0.95, top_k 20, min_p 0, presence_penalty 0.1, repetition_penalty 1.05` |
 
-完整 argv 与环境变量快照：[`tools/live-cmdline.txt`](tools/live-cmdline.txt)、[`tools/live-env.txt`](tools/live-env.txt)。
+完整 argv 与环境变量快照（旧栈 2026-09-23）：[`tools/live-cmdline.txt`](tools/live-cmdline.txt)、[`tools/live-env.txt`](tools/live-env.txt)。
 
 ---
 
-## 2. 最短复现路径
+## 3. 旧 chroot 栈最短复现路径
 
 前提：一台已装好 NVIDIA 驱动、已解锁显存、rootfs 已解出的机器。若从零开始，按顺序读
 [`docs/01`](docs/01-host-prep.md) → [`docs/02`](docs/02-image-rootfs.md) → [`docs/03`](docs/03-model.md)。
@@ -106,7 +178,7 @@ bash scripts/verify-deployment.sh
 
 ---
 
-## 3. 目录导航
+## 4. 目录导航
 
 | 路径 | 内容 |
 |---|---|
@@ -122,11 +194,12 @@ bash scripts/verify-deployment.sh
 | `patches/` | 22 个 `.patch` + `MANIFEST.tsv`（pristine/patched 双哈希） |
 | `scripts/` | 全部可执行件（含 `apply-patches.py`、`verify-deployment.sh`） |
 | `scripts/host/`、`systemd-units/` | udev 规则、gen2 钩子、功耗脚本、systemd 单元 |
-| `tools/` | 生产机实跑快照（cmdline / env / 启动画像 / metrics 摘录） |
+| `tools/` | 旧栈生产快照（cmdline / env / 启动画像 / metrics 摘录，2026-09-23） |
+| **`stack-0300/`** | **当前生产栈全套**：运行时补丁、启动/停止/看门狗、**内存二级缓存（KVCache）实现与验收工具链**、生产真值快照、README-0300.md（§11=生产定版） |
 
 ---
 
-## 4. 硬约束速查（改错必挂）
+## 5. 硬约束速查（改错必挂）
 
 | # | 约束 | 依据 |
 |---|---|---|
@@ -140,12 +213,15 @@ bash scripts/verify-deployment.sh
 | 8 | **绝不 SIGKILL 持 CUDA 上下文的进程** | 会诱发 Xid31 → GPU 降级 → 唯一修复是整机重启 |
 | 9 | 启新实例前必须确认两卡显存归零 | 孤儿 worker 占显存 → 下次启动 shm_broadcast 超时 |
 | 10 | 改镜像内 `.py` 后必须删对应 `__pycache__` | 否则改动不生效（症状：加了日志却一条不出） |
+| 11 | 内存二级缓存只用 `FN_SIMPLE_OFFLOAD=<GiB>`，**与 `FN_KVOFF=1` 互斥** | 同开 inner 直接拒启；经典连接器在 hybrid 模型上回载内容不等价（§1.1） |
+| 12 | 缓存命中实验两侧 `chat_template_kwargs` 必须完全一致 | 块哈希含模板前缀，`enable_thinking` 一边开一边关 ⇒ 永远 0 命中（stack-0300 ROUND2 实锤） |
+| 13 | 看门狗自愈后需手工带回 offload 档 | 自愈安全模式故意剥离档位（防「崩溃→重启→再崩」循环），见 `fnx-watchdog.log` 的 TIER_DROPPED 行 |
 
 展开见 [`docs/08-pitfalls.md`](docs/08-pitfalls.md)。
 
 ---
 
-## 5. 与官方手册的偏离（本仓库的两处自主决策）
+## 6. 与官方手册的偏离（本仓库的两处自主决策）
 
 唯一权威手册：[`gavinxym/170hx-2-qwen3.8-flash-next`](https://github.com/gavinxym/170hx-2-qwen3.8-flash-next)（只有一份 README，不含补丁源码）。
 手册定稿参数本仓库**逐字照抄**，除两处——都是硬件不匹配逼出来的，均有实测依据：
@@ -161,7 +237,7 @@ bash scripts/verify-deployment.sh
 
 ---
 
-## 6. 免责声明
+## 7. 免责声明
 
 - **不含模型权重**。Qwen3.8-Flash-Next-W4A16-AutoRound 需自行从模型站下载（181 GB，见 `docs/03`）。
 - 依赖**官方定制镜像** `vllm/vllm-openai:qwen38-flash-next`（含 `Qwen4ExpForConditionalGeneration` 架构与 PLE offload 框架）。上游若重推 tag 会使补丁哈希失配——本仓库按 digest 锁定并在 `apply-patches.py` 里做了硬校验，失配会明确报错而不是静默打歪。

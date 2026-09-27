@@ -687,3 +687,74 @@ grep -n "function stack0300Active\|scriptNew:\|stopScriptNew:\|startScript === s
 两处（spawn 侧守卫）；缺哪类即被写回。恢复＝按本节上面三条重新实施，**本仓库尚未收该方案的
 幂等重打脚本**（见 §10 待办 8）。
 
+
+---
+
+## 11. 生产定版（2026-09-27 20:20 快照）：内存二级缓存 96 GiB 常驻开启
+
+> 本节是**当前真实运行态**的逐字记录。实例 19:34:40 拉起，至快照时刻无卡死、无新增 Xid。
+> 完整 argv / env 快照（从 `/proc/<APIServer>/cmdline`、`/proc/<APIServer>/environ` 直读）：
+> [`tools/live-cmdline-0300.txt`](tools/live-cmdline-0300.txt)、[`tools/live-env-0300.txt`](tools/live-env-0300.txt)。
+
+### 11.1 形态一览
+
+| 项 | 值 | 判据（怎么自己验） |
+|---|---|---|
+| 引擎 | 官方 vLLM **0.30.0**（宿主 venv py3.11，site-packages 零改动）+ `PYTHONPATH=<本目录>/patches:<本目录>/patches-extra` | `pip show vllm`；日志 `[rt-patch-extra] 本地扩展钩子已挂载` |
+| 并行/投机 | PP2（26,22）+ **MTP4**；block 1616；mamba float32；1M YaRN×4 | `/metrics vllm:cache_config_info` |
+| **内存二级缓存** | **SimpleCPUOffloadConnector，`--kv-offloading-size 96`（GiB，两 rank 均分 48 GB/rank）** | 日志 `SimpleCPUOffloadConnector: role=SCHEDULER, per_rank=48.00 GB` + `SimpleCPUOffloadWorker [CPU]: N CPU blocks (≈48 GB)` |
+| GPU KV 池 | **1,207,262 token / 776 块**（18.06 GiB，@1M 并发 1.15×） | 日志 `GPU KV cache size: 1,207,262 tokens` |
+| CPU 档容量 | blocks/rank = [2224, 2157] → min×1616 = **≈348.6 万 token = 2.9× GPU 池**（≈36.3 万 tok/GiB） | 日志 worker 行 + 换算 |
+| launch.env 钉法 | `FN_KVOFF=0`（经典退役）+ `FN_SIMPLE_OFFLOAD=96`；两者同开 inner 直接拒启 | `cat /home/ll/deploy/vllm-0300/launch.env` |
+| 回载收益（实测） | 挤池 >1.2M token 后重发：~100k prompt 命中 **97%**、~40k **93%**、~12k **80%**（零头=每请求末块 ≤1616 不入库）；验证码精准复述=内容无损 | `vllm:external_prefix_cache_hits_total` 增量 + `kvoff-accept.sh` |
+| 快照时刻累计 | external hits = **143,824 token**（运行 45 分钟）；本地前缀缓存累计命中 **88.8%**（22.65M/25.51M queries） | `curl :18420/metrics` |
+| 内存账 | PLE BF16 锁页 95.4 GiB + CPU 档 96 GiB 常驻 + 引擎 ≈ 204 GB / 251 GB（free≈7、avail≈44） | `free -g`（按行号取，勿按中文标签） |
+
+### 11.2 为什么是 Simple 而不是经典连接器（定版理由，细节见 ROUND1/2 文档）
+
+- 经典 OffloadingConnector（我们移植的 c1~c11）在本模型（hybrid：全注意力 + GDN/mamba 组）上
+  **store 拷贝期间 mamba 状态块仍被模型活写** → CPU 档回载内容不等价（注意力组逐字节精确、
+  mamba 组不等），属数据面竞态，判定退役。
+- 官方 `SimpleCPUOffloadConnector` 显式 `SupportsHMA`，`v1/simple_kv_offload/manager.py:834-836`
+  **跳过 `has_positionally_stable_blocks=False` 的组**——只卸载/回载位置稳定的注意力组；
+  CPU 档查找复用核心 `cpu_coordinator.find_longest_cache_hit`；拷贝走后台线程 DMA
+  （独立流 + compute-done 事件排序），不碰 worker 主线程 → 与 PP2 的 NCCL 中继无锁死面。
+- 收益边界（如实）：只对「前缀已被挤出 GPU 池后又被重发」的负载有收益；本机历史（GPU 池
+  自扛 ~90% 命中）说明多数流量用不到它，但档位常驻的代价只有内存、无稳定性投诉
+  （soak 记录见 §11.4 工具）。
+
+### 11.3 复现要点（他人从零跑通本形态）
+
+1. `uv venv --python 3.11 && pip install vllm==0.30.0`（torch 2.13.0+cu130 / flashinfer 0.6.18.post1 随附）；
+   补 cu13 软链：`site-packages/nvidia/cu13` 下 `lib64→lib`、`lib/libcudart.so→libcudart.so.13`。
+2. 内核 `memlock` 不限（root 运行即可；PLE 95.4 GiB `cuMemHostRegister` 与大页锁 pinned 都要它）。
+3. 把本目录的 `patches/` 与 `patches-extra/` 放上机器，
+   `PYTHONPATH=<绝对路径>/patches:<绝对路径>/patches-extra` 注入启动环境（这是 site-packages 零改动的
+   运行时补丁机制；缺了它 PP>1 / auto-round PLE 会被上游硬拒）。
+4. `FN_*` 环境按 §11.1 表（或直接抄 `tools/live-env-0300.txt`），跑
+   `bash start-flash-next-0300.sh`（脚本内 sudo 口令走 `SUDO_PASS` 注入）。
+5. 就绪判据四行日志（期望值逐字）：
+   `GPU KV cache size: 1,207,262 tokens`、`Creating v1 connector with name: SimpleCPUOffloadConnector`、
+   `SimpleCPUOffloadWorker [CPU]: 2224 CPU blocks (47.98 GB)`（PP0；PP1=2157）、
+   `Capturing CUDA graphs` 正常走完；`curl :18420/health` = 200。
+6. 验收：`bash kvoff-accept.sh`（preflight + 挤池 + 重发对照 + 失败自动恢复，详见
+   [`ROUND3-simple-offload-验收手册.md`](ROUND3-simple-offload-验收手册.md)）。
+
+### 11.4 运维件（本目录已收齐，均为生产现行版本的脱敏副本）
+
+| 文件 | 机器路径 | 用途 |
+|---|---|---|
+| `patches/sitecustomize.py` | `vllm-0300/patches/sitecustomize.py` | 上游运行时补丁入口（8 处 hook，正源公开仓库 `CyrilCN/qwen38-flash-170hx-patches`，本副本含 09-27 FP8-PLE 加载契约修正） |
+| `patches-extra/sitecustomize.py` | `vllm-0300/patches-extra/sitecustomize.py` | 本地扩展入口（#8 mm-warmup 跳过 + #9 挂 dsh_kvoff_rt） |
+| `patches-extra/dsh_kvoff_rt.py` | 同名 | 经典连接器移植层（c1~c11；现已退役但保留代码，缺省惰性零影响，总闸 `DSH_KVOFF_RT_DISABLE=1`） |
+| `fnx-18420-watchdog.sh` + `systemd/fnx-18420-watchdog.{service,timer}` | `/home/ll/deploy/…`、`~/.config/systemd/user/…` | 30s 探活自愈；**自愈安全模式会剥离 offload 档位**（防崩溃循环），带档自愈加回需手工重放 `launch.env` |
+| `kvoff-accept.sh` / `kvoff-churn.py` / `kvoff-soak-monitor.sh` | `/home/ll/deploy/…` | 验收 / 挤池判据 / 每 5 分钟 soak 记录（health·KV 水位·外部命中·Xid·内存） |
+| `tools/live-cmdline-0300.txt` / `tools/live-env-0300.txt` | —— | 生产实跑真值快照（2026-09-27 20:20） |
+
+### 11.5 风险与第一手处置
+
+- 96 GiB 档 = 物理常驻；本机 251 GB 内存且有**内存混插 MCE 硬挂史**（docs/08 P30~P33 语境）。
+  若复发整机硬挂/卡死：第一刀 `FN_SIMPLE_OFFLOAD=48`（命中率实测与 96 持平，只减存活时长），
+  第二刀 = 去掉该变量回无二级缓存定版。
+- 看门狗自愈后档位被剥离属**设计行为**（§11.4），检查 `launch.env` 与 `fnx-watchdog.log`
+  的 `TIER_DROPPED` 行即可确认。

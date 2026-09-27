@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-09-27 晚 — 生产定版发布：内存二级缓存 96 GiB 常驻（v1.1.0）
+
+- **当前生产形态首次完整入仓**（此前仓库主体是旧 chroot 栈）：官方 vLLM 0.30.0 运行时补丁栈 +
+  `SimpleCPUOffloadConnector` 宿主内存 KV 二级层 96 GiB。生产实例 19:34:40 拉起、至快照无卡死无新增 Xid。
+- 新增生产真值快照：`stack-0300/tools/live-cmdline-0300.txt`、`live-env-0300.txt`（读自 `/proc/<APIServer>`）。
+- `README-0300.md` 新增 **§11 生产定版**：形态表 / 容量账（CPU 档 ≈348.6 万 token = 2.9× GPU 池）/
+  实测命中率（~100k→97%、~40k→93%、~12k→80%、external hits 45 分钟 143,824）/ 从零复现六步 /
+  运维件清单 / 风险与第一手处置。
+- 补齐复刻缺口：`stack-0300/patches/sitecustomize.py`（上游 8-hook 运行时补丁生产现行版）、
+  `fnx-18420-watchdog.sh` + systemd 单元（含自愈安全模式：剥离 offload 档防崩溃循环）、
+  `kvoff-soak-monitor.sh`。根 README 重构：§1=当前生产（含内存二级缓存专节），旧 chroot 内容
+  整体标注为回滚路线（§2 起）。
+- `docs/08-pitfalls.md` 新增「八、内存二级缓存专属坑」P51~P58（metrics defs 断言、aggregate 丢字段、
+  模板开关假 0 命中、mamba 活写竞态、拷贝 API×中继冻结、pinned 物理账、flock fd 继承、判据假 PASS）。
+- **安全**：清除了仓库中泄漏的真实 sudo 口令（3 处）与内网 IP（7 处），全部改为
+  `SUDO_PASS` 注入 / `<DEPLOY_HOST>` 占位，并**重写了 git 历史**（旧 tip 的口令不再可达；
+  建议部署机择期改口令）。
+
+
 ## 2026-10-05 — 控制台启动链路审计：`FN_SCHED_POLICY` 接线 + §9 纠偏
 
 - **审计结论**：`8889` 控制台 → 官方 0.30.0 的启动链路**已正确指向**（09-26 完成）。本次对

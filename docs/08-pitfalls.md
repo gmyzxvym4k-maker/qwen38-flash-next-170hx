@@ -272,6 +272,62 @@
 
 ---
 
+## 八、内存二级缓存（KV offload）专属坑（2026-09-22~27，全史见 `stack-0300/`）
+
+### P51 给引擎 stats 自加 key，必须同时注册 metric defs
+- 移植版 connector 在 stats 里加了新 key，而 `offloading/metrics.py` 的 `observe()` 要求每个 key 命中
+  `_offloading_metric_defs` → **首个请求即 AssertionError→500**，且每次 record 都走这条路（确定性炸）。
+- 判据：崩栈停在 `metrics.py observe → assert key in self._offloading_metric_defs`。
+  修 defs 比砍 stats 字段好，或干脆不加自造 key。
+
+### P52 覆盖上游方法时丢字段 = 语义性损坏（最阴的一种）
+- 我们 c6 覆盖 `OffloadingWorkerMetadata.aggregate()` 时写成 `completed_jobs=dict(self.completed_jobs)`，
+  **丢掉了 `other.completed_jobs`**。调度器等每个 job 的 pending_count（=worker 数，PP2 为 2）减到 0
+  才调 `complete_store` → 每个 job 永远只记 1 次 → chunk 永久 `ref_cnt=-1` → lookup 恒 HIT_PENDING
+  → **请求被永久 defer、CPU→GPU 恒 0**。store 日志看起来一切正常、字节在涨。
+- 教训：monkeypatch 上游方法必须逐字段保语义；"写得进、永远不命中"第一嫌疑是聚合/引用计数被吞。
+
+### P53 缓存命中实验的建档/重发两侧 `chat_template_kwargs` 必须完全一致
+- vLLM 块哈希把**模板渲染后的前缀**算进去；建档时 `enable_thinking=true`、重发时缺省 false ⇒
+  首块哈希就不同 ⇒ **永远 0 命中**，且现象酷似"缓存坏了"。两次窗口全栽在这。
+- 做缓存实验前先固定所有会进 prompt 的开关（本项目判据文档已把它列为前置检查）。
+
+### P54 hybrid 模型上"卸载 mamba 状态"是数据面竞态，不是索引 bug
+- 经典连接器回载内容与本地 KV 不等价的真因：store 拷贝在途时，mamba 状态块**仍在被模型活写**
+  （指纹：注意力组逐字节精确、mamba 组对不上）。off-by-one、指针布局、拷贝 API 全是伪线索。
+- 正解=官方 `SimpleCPUOffloadConnector`：源码直接跳过 `has_positionally_stable_blocks=False` 的组，
+  **只卸载位置稳定的注意力组**。设计准则：二级层只碰"写后不再变"的数据，否则必须串行化写窗。
+
+### P55 拷贝 API 与并行中继的相互作用：换 API 只改失败签名，不改前提
+- `cuMemcpyBatchAsync` 与 PP2 NCCL-P2P 并发会冻结 compute 流（worker 卡死、py-spy 抓在 kernel
+  launcher）；而把 GPU→CPU 换成 Triton SM 内核又撞上游明令禁止的两点（带宽 + host 缓冲未经
+  `cudaHostRegister` 时 device 不可访问 → MMU Fault/Xid31）。
+- 结论：**GPU→CPU 只走"已注册锁页 + DMA 且独立于主计算流"** —— Simple 连接器的
+  后台线程 + 独立流 + compute-done 事件排序就是这套正确姿势。
+
+### P56 pinned 内存：配置值≠物理值；计数器也要验明正身
+- PP2 私有 pinned 实测 ≈1.56×配置（96 GiB 档实际钉 107 GB，且 64→96 非线性/有上限）；
+  公共区改前缀和偏移后实测比值 1.00。**任何"配了 N GiB 就以为占 N×系数"都要用 smaps 实测**：
+  `sudo awk '/\/dev\/zero/{f=1;next} f&&/^Rss:/{t+=$2;f=0} END{print t}' /proc/<worker>/smaps`。
+- 另一个假绿灯：把 `*_created`（unix 时间戳）当字节累加，编出过"回载 5.37 GB"的假数据。
+  判据必须盯带方向的 counter（如 `kv_offload_total_bytes_total{direction="CPU_to_GPU"}`）。
+
+### P57 编排脚本的 flock fd 会被守护进程继承
+- `exec 9>lock && flock -n 9` 编排里 setsid 拉起 vLLM 时不关 fd ⇒ 被拉起的进程树**长期持锁**，
+  之后所有窗口 `flock -n` 静默出局。解法：spawn 命令尾部加 `9>&-`。
+  排障：`fuser -v /tmp/<lock>`（持有者可能属 root，/proc 自扫看不到）。
+- 同轮教训：setsid 后台编排的 stdout/stderr 绝不能进 `/dev/null`——撞锁/语法错全成静默死亡，
+  统一落 `/tmp/<tag>.out`。
+
+### P58 验证窗口自身会撒谎：判据要防"旧串匹配"和"行数窗口漂移"
+- 窗口判据 grep 的是**旧栈日志字符串**（`FUSE: store 方向`），现行日志早已换成
+  `[dsh-kvoff c6] worker store fuse tripped` → 永远 grep 不到 → **假 PASS**。验证补丁要盯
+  「预期日志是否出现」，零触发是假设证伪信号，不是修复成功。
+- 高日志量下"取尾部 N 行找警告"会漂移漏检（实锤：死亡警告距文件尾 2230 行），
+  行数窗口必须配时间戳校验（警告距今 ≤N 分钟）。
+
+---
+
 ## 附：已验证走不通的死路（别再试）
 
 | 尝试 | 结论 |
@@ -286,4 +342,6 @@
 | BF16 档预热 PLE 页缓存 | 结构性无效（P27） |
 | `read_ahead_kb=0` | 权重加载慢 10.9×（P28） |
 | TP2 代替 PP2 | 无 P2P 时每步约 192 次 all-reduce 走 host SHM，更慢 |
+| 经典 OffloadingConnector 在本模型常驻（含 c1~c11 全部修法） | hybrid mamba 活写竞态，回载不等价（P54），退役；用 SimpleCPUOffloadConnector |
+| 「加大 pinned 到 >GPU 池」在 251 GB 内存机上硬做 | PLE 95 GB + 私有 pinned 1.56× 必超配，MCE 硬挂风险（P56） |
 | MTP6 / MTP1 在本档 | MTP6 触发 QSA ring 断言（P04）；MTP1 实测比 MTP4 慢 22% |
