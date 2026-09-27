@@ -118,6 +118,15 @@ inner 脚本显式 export 该变量为 1，`ngram_embedding.py:702-706` 据此�
 
 要回到旧栈那组值：`FN_GENCFG='{"temperature":1,...}' bash start-flash-next-0300.sh`。
 
+> **09-27 更新（另一会话的用户定档，本仓库如实记录）**：采样基准改为
+> `t1.0 / p0.95 / k20 / minp0 / pp0 / rp1.0`，同步落在 `server.js` 的
+> `SCRIPT_MODELS[..].base` 与两套栈的 inner `GENCFG_DEFAULT`。
+> **但三个快启预设仍显式带 `temperature:0.6`** ⇒ 从预设启动时 plan 会下发
+> `FN_GENCFG`，实跑值还是 0.6（当前 18420 的 `/proc/<pid>/cmdline` 实测即 0.6）。
+> 这构成"弹窗/基准显示 ≠ 预设启动后的引擎真值"的三源不一致，与本项目一贯的
+> 三源同步铁律相违；**未擅自改动**（改预设=改生产行为），待用户拍板：
+> 要么把预设的采样字段删掉（跟随 base），要么把 base 改回 0.6。
+
 另外两处刻意偏离：
 
 - `VLLM_USE_FLASHINFER_SAMPLER=0`：宿主 venv 无 ninja/nvcc，FlashInfer 采样器 JIT
@@ -248,6 +257,102 @@ extra 侧再用 `_PATCHES_ROOT` 排除整棵补丁树，避免回链成无限递
   启动时只打说明性日志；④ 生产回滚 `FN_KVOFF=0`（launch.env 已写回），重启 200s 内
   恢复 health 200、看门狗 timer 已恢复。
 
+## 6.2 公共区（c8）：PP2 下 CPU KV 二级缓存的物理账对得上（2026-10-06 实现）
+
+### 动机：不是优化，是"配置值 ≠ 物理值"这个隐性风险
+
+c2 的每 rank 私有 pinned 缓冲，各 rank 都按**自己的**每块字节去铺满 `cpu_bytes_to_use`：
+
+| 口径 | rank0（26 层） | rank1（22 层） | 合计物理 | manager 可用档数 |
+|---|---|---|---|---|
+| 配置 64 GiB | 64 GiB | ≈54 GiB | **≈107 GiB**（09-22/09-24 smaps 实测 1.56×） | 64 GiB ÷ rank0 每块 |
+
+这台机器 09-22 起有"大内存操作整机硬断电"的病史，**配 64 GiB 实际钉 107 GiB** 是不可接受的
+——容量规划做不了，看门狗/仪表盘显示的还都是配置值。
+
+### 做法：把"slot 起点 = rank × cpu_page_size"换成前缀和
+
+上游共享区（`SharedOffloadRegion`）的行布局是 `|W0-C0|W1-C0|...|`，slot 起点写成
+`rank × cpu_page_size_per_worker`，而后者是 **per-rank 量**：TP 下各 rank 层相同才成立，
+PP>1 各 rank 层子集不同 ⇒ 行 stride 与总尺寸分歧 ⇒ 创建者 ftruncate 自己的字节数、
+joiner 等自己的字节数 → 30 s 超时（09-18 实锤，也是当年判定"统一尺寸也救不了共享区"的依据）。
+
+c8 只改这一处算术，其余（O_EXCL 创建、ftruncate、barrier 后 unlink、整区 cudaHostRegister、
+`(row_stride, 1)` 跨步视图）全部沿用上游：
+
+```
+slot_i     = round_up(rank_i 自己的每块字节, 4096)
+offset_i   = Σ_{j<i} slot_j            ← 前缀和，天然两两不相交
+row_stride = Σ_i slot_i                ← 全体一致
+num_chunks = cpu_bytes_to_use // row_stride
+```
+
+⇒ **物理钉住 = 配置值**（公共区是 `/dev/shm` 上的 tmpfs 文件，`df --output=used /dev/shm`
+可直接核对），且不再有"每 rank 各铺一份"的浪费；每个 rank 只在自己 `[offset_i, offset_i+slot_i)`
+内读写，跨步视图与上游 `compute_sub_block_ptrs` 的地址算术完全兼容（自检里有逐指针断言）。
+
+### 协商：无中心、可判陈旧、失败即降级
+
+worker 在 `/dev/shm/vllm_kvoff_slot.<engine_id>.r<rank>.json` 发布自己的每块字节，收齐
+`world_size` 份后各自算出同一套布局，再发布第二次带 `decision`+`rows`。**调度器侧**
+（EngineCore 进程，构造时机在 `initialize_from_config` 之后，见 `v1/engine/core.py:162/354`）
+只读这些文件并采纳 `num_chunks = min(各 rank 公布的 rows)`。
+
+- 取 min 是安全性的全部来源：manager 发出的 chunk id 必须落在**每一个** rank 的 CPU 缓冲行数
+  以内，越界就是 device-side assert / Xid31。顺带堵住上游一个潜在越界——当后置 PP rank 的
+  每块字节 **大于** rank0 时，上游按 rank0 算的 `num_chunks` 会超过该 rank 的实际行数
+  （自检有这一项：`c8 rank1 块更大 -> 采纳下界`）。
+- 陈旧文件判据用 `/proc/<pid>/stat` 的 **starttime**（进程存活 + 与本进程启动时刻相差 ≤
+  `FN_KVOFF_LAYOUT_WINDOW` 秒，缺省 900），**不用墙上时间**——本机 RTC 会跳到 2161 年（09-18 定案）。
+- 收不齐 / `/dev/shm` 放不下 / 本 rank 实际需求超过自己那格 ⇒ 该 rank 退回 c2 私有缓冲并
+  如实公布；调度器收不齐时把 CPU 档行数置 **0**（`prepare_store` 恒返回 None = 不做 offload），
+  引擎照常服务，绝不带着错几何跑。
+
+### 适用范围与旋钮
+
+自动生效条件：`pp_size>1` 且 `tp_size==1` 且 非 replicated(MLA) 且 非 canonical 布局 且 单节点 mp。
+不满足即静默退回 c2（行为与加补丁前逐字一致）。
+
+| 旋钮 | 缺省 | 说明 |
+|---|---|---|
+| `FN_KVOFF_SHARED` | 1 | 0=强制走 c2 私有缓冲（对照/应急） |
+| `FN_KVOFF_LAYOUT_TIMEOUT` | 120 s | 协商等待上限 |
+| `FN_KVOFF_LAYOUT_WINDOW` | 900 s | 同一次启动窗口的 starttime 容差 |
+| `FN_KVOFF_WAIT_TIMEOUT` | 15 s | c6 有界等待（沿用） |
+
+容量口径（本机 18420，1M 档）：GPU 池 1,207,262 tok、全局 ≈32.2 KB/token（每 rank 18.06 GiB×2）。
+⇒ 48 GiB ≈ 160 万 tok（**1.33× GPU 池**，够回载实验）；64 GiB ≈ 213 万 tok。
+内存账：PLE BF16 锁页 95.4 GiB + 公共区 + 引擎 ≈15 GiB + 权重页缓存 79 GiB（可回收）≤ 251 GiB
+⇒ 首窗口建议 48 GiB，稳了再上 64 GiB。
+
+### 判据日志行（启动后 grep 实例日志）
+
+```
+[rt-patch-kvoff] c8[worker rank0 pid...]: 公共区已协商 —— row_stride=... 本 rank 区段 [0, ...) num_chunks=... ⇒ 物理钉住 48.00 GiB（配置 48.00 GiB，不再 ×world_size）
+[rt-patch-kvoff] c8[worker rank1 pid...]: ... 本 rank 区段 [50331648, ...) ...
+[rt-patch-kvoff] c8[调度器侧]: decision=['shared'] 各 rank 行数=[...] ⇒ 采纳 num_chunks=...
+[rt-patch-kvoff] c1: kv_cache_groups=6 -> offload 分组 [0, 1, 2, 3, 5]   # 三侧必须一致
+```
+
+### 验证状态
+
+- **离线自检 67 项全绿**（`selftest_kvoff_rt.py`，不占显存、不动服务）：布局数学、前缀和
+  区段不相交、双 rank 打开同一 region 的字节可见性、喂给上游 `compute_sub_block_ptrs` 的
+  逐指针断言、调度器/worker 口径一致、四类门控退回私有、死进程陈旧文件被忽略、
+  `/dev/shm` 不足退回私有、混合决策取 min、区段溢出被断言拦住。
+- **实机窗口未跑**（需停机 8~10 min，会中断 18420 上所有会话）：
+  `SUDO_PASS=**** bash /home/ll/deploy/kvoff-c8-window.sh`
+  自动做：停看门狗 → 优雅停 → `FN_KVOFF=1 FN_KVOFF_SHARED=1` 原样重启 → 12 项判据
+  （含 `df --output=used /dev/shm` ≈ 配置值这条物理判据）→ `kvoff-c8-probe.py` 做
+  「建档 2×100k → 挤池 11×100k（>GPU 池）→ 重发」并断言
+  `external_prefix_cache_hits_total` 增量 > 0 **且** `CPU_to_GPU` 字节 > 0 **且** 验证码精准复述
+  → 零新增 Xid 复查；任一硬失败自动回滚成 `FN_KVOFF=0` 生产态。
+- 仍未定论的一项（窗口会给答案）：**store 方向在 0.30.0 上会不会崩**。09-23 的
+  `cuMemcpyBatchAsync error 1` 发生在旧 chroot 栈的抢占路径；09-27 的 Xid31 是我们自己
+  把 store 强切 Triton 造成的（已收窄为仅 load 走 Triton）。c7 收窄后的 store（上游 C++ DMA）
+  在 0.30.0 上 09-27 实测落了 21.4 GB 无异常，但没跑到抢占边界。
+
+
 ## 7. 回滚
 
 新栈出问题就整条丢掉 PYTHONPATH 概念、直接复活旧栈（旧文件全部未动）：
@@ -319,8 +424,9 @@ bash /home/ll/deploy/start-flash-next-w4a16.sh           # ③ 起旧栈（注�
 - **三层 `FN_*` 穷举对账（10-05）**：对 `plan → wrapper → inner` 逐层取变量集合做差集。结论——
   wrapper 动态透传无缺口；`inner` 不串栈；长上下文三档链路完整（`maxModelLenLong` 1048576 /
   `maxModelLen512` 524288 / `longCtxModelPath` / `longCtx512ModelPath` / `altModelPaths` 均在
-  `qwen3.8-flash-next-w4a16` 条目内，位于 `base` 块之后）；采样三处一致（inner `GENCFG_DEFAULT`
-  ≡ `SCRIPT_MODELS[..].base` ≡ 三个快启预设）。**唯一真缺口 = `FN_SCHED_POLICY`**：plan 在用户
+  `qwen3.8-flash-next-w4a16` 条目内，位于 `base` 块之后）；采样 inner `GENCFG_DEFAULT`
+  ≡ `SCRIPT_MODELS[..].base`（09-27 起同为 t1.0/p0.95/k20/minp0/pp0/rp1.0），
+  **但三个快启预设显式带 `temperature:0.6`** → 预设启动会覆盖成 0.6（见 §4 注，待拍板）。**唯一真缺口 = `FN_SCHED_POLICY`**：plan 在用户
   选非 fcfs 时下发（server.js:828-829 `if (sp && sp !== 'fcfs') env.FN_SCHED_POLICY = sp;`），
   而 inner 既不消费它、也没有对应的 `NOOP_NOTE_` 说明 → 落到「参数体检」的 UNKNOWN 分支，
   只打一条 `[FN-0300] 警告：收到本脚本未实现的参数 FN_SCHED_POLICY`，引擎仍走 fcfs。

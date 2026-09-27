@@ -149,7 +149,8 @@ export NCCL_SHM_DISABLE=0
 # ---------------------------------------------------------------- argv
 # 采样参数：09-21 定版三源一致值（治循环复读）。旧栈实跑 argv 是漂移态
 # （temperature 1 / presence 0 / repetition 1），此处按定版值，见 README-0300.md §4。
-GENCFG_DEFAULT='{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.1,"repetition_penalty":1.05}'
+# [gendefault 0927] 采样缺省定档 t1.0/p0.95/k20/minp0/pp0/rp1.0（与 server.js SCRIPT_MODELS.base 逐字段一致）
+GENCFG_DEFAULT='{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0,"repetition_penalty":1.0}'
 CHATKW_DEFAULT='{"enable_thinking":true,"preserve_thinking":true}'
 
 BLOCK=${FN_BLOCK:-1616}
@@ -205,17 +206,30 @@ if [ -n "${FN_SCHED_POLICY:-}" ]; then ARGS+=(--scheduling-policy "$FN_SCHED_POL
 #    1005 起经 rt-patch #9（patches-extra/dsh_kvoff_rt.py）移植回 0.30.0，缺省仍关。
 
 # ------------------------------------------------------- CPU KV 二级缓存
-# 1005 移植定版（rt-patch #9，语义=旧栈 c1/c2/c6/c7）：缺省关。
-# 旧栈结论全部继承：
-#  · 物理钉住 ≈1.56x 配置值（PP2 每 rank 私有 pinned，容量铁律 09-22）；
-#  · 容量必须 > GPU KV 池（≈122 万 tok）才有回载收益，store 侧 ≈40.4KB/token；
-#  · 对本机流量形态收益存疑（0929 退役依据：21h 生产 external hits=0，GPU 池自扛 ~90%）；
-#  · store 熔断只读降级 + 有界等待已内置（FN_KVOFF_WAIT_TIMEOUT 缺省 15s）。
+# 1005 移植定版（rt-patch #9，语义=旧栈 c1/c2/c6/c7）；1006 增补 c8「公共区」。
+# 缺省仍关（FN_KVOFF=0）。开启后的三条口径：
+#  · **物理钉住 = 配置值**（c8：PP2 下跨 rank 前缀和偏移的单一共享 pinned 区，
+#    /dev/shm/vllm_kvoff_slot.<engine>.r<rank>.json 协商）。c8 不适用/协商失败
+#    才退回 c2 每 rank 私有缓冲（≈1.56~2× 配置值，09-22 实测 64GiB→107GB）。
+#    显式关闭公共区：FN_KVOFF_SHARED=0。
+#  · 容量必须 > GPU KV 池（≈122 万 tok）才有回载收益；公共区下
+#    容量 = cpu_bytes_to_use ÷ 全局每块字节（≈51 MB/1616 tok ≈ 32 KB/token）
+#    ⇒ 64 GiB ≈ 236 万 tok = 1.95× GPU 池 ✓（私有路径要 107 GB 才够）。
+#  · 对本机流量形态收益存疑（0929 退役依据：21h 生产 external hits=0，
+#    GPU 池自扛 ~90%）；store 熔断只读降级 + 有界等待已内置
+#    （FN_KVOFF_WAIT_TIMEOUT 缺省 15s）。
 if [ "${FN_KVOFF:-0}" = "1" ]; then
   KVOFF_BYTES="${FN_KVOFF_BYTES:-68719476736}"
+  export FN_KVOFF_SHARED="${FN_KVOFF_SHARED:-1}"
   ARGS+=(--kv-transfer-config "{\"kv_connector\":\"OffloadingConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"cpu_bytes_to_use\":${KVOFF_BYTES}}}")
   export FN_KVOFF_WAIT_TIMEOUT="${FN_KVOFF_WAIT_TIMEOUT:-15}"
-  echo "[FN-0300] CPU KV 二级缓存：开 cpu_bytes_to_use=${KVOFF_BYTES} ($(( KVOFF_BYTES / 1073741824 )) GiB) wait_timeout=${FN_KVOFF_WAIT_TIMEOUT}s（rt-patch#9 c1/c2/c6/c7 已挂）" >&2
+  # 公共区是 tmpfs 文件，先看 /dev/shm 放得下（放不下 rt-patch 会自己退回私有，
+  # 这里只是提前出声，免得启动日志里两行相隔太远看不出因果）
+  SHM_FREE=$(df -B1 --output=avail /dev/shm 2>/dev/null | tail -1 | tr -d ' ')
+  if [ -n "${SHM_FREE:-}" ] && [ "${FN_KVOFF_SHARED}" = "1" ]      && [ "$SHM_FREE" -lt "$(( KVOFF_BYTES * 102 / 100 ))" ]; then
+    echo "[FN-0300] 警告：/dev/shm 可用 $(( SHM_FREE / 1073741824 )) GiB < 公共区 ${KVOFF_BYTES} 字节 ⇒ 会退回每 rank 私有 pinned（物理 ≈1.56x）" >&2
+  fi
+  echo "[FN-0300] CPU KV 二级缓存：开 cpu_bytes_to_use=${KVOFF_BYTES} ($(( KVOFF_BYTES / 1073741824 )) GiB) wait_timeout=${FN_KVOFF_WAIT_TIMEOUT}s 公共区=${FN_KVOFF_SHARED}（rt-patch#9 c1/c2/c6/c7/c8 已挂）" >&2
 fi
 
 if [ "${FN_EP:-0}" = "1" ]; then ARGS+=(--enable-expert-parallel); fi
@@ -264,7 +278,8 @@ FN_MAXLEN FN_MAXLEN_EFF FN_PORT FN_SERVED FN_TP FN_PP FN_PP_PARTITION FN_DTYPE F
 FN_SEQS FN_GPUMEM FN_BLOCK FN_MBTOKENS FN_MOE FN_EP FN_EAGER FN_ENFORCE_EAGER FN_SPEC \
 FN_PREFIX_CACHE FN_CHUNKED FN_ASYNC FN_SEED FN_GENCFG FN_CHATKWARGS FN_CACHE_ROOT \
 FN_LOGLEVEL FN_CUDA_VISIBLE_DEVICES FN_EXTRA_ARGS FN_EXTRA_ENV FN_DRY_RUN \
-FN_KVOFF FN_KVOFF_BYTES FN_KVOFF_WAIT_TIMEOUT FN_SCHED_POLICY "
+FN_KVOFF FN_KVOFF_BYTES FN_KVOFF_WAIT_TIMEOUT FN_KVOFF_SHARED \
+FN_KVOFF_LAYOUT_TIMEOUT FN_KVOFF_LAYOUT_WINDOW FN_SCHED_POLICY "
 NOOP_NOTE_FN_CPU_OFFLOAD_GB="FN_KVOFF=1 时用 FN_KVOFF_BYTES（字节数）指定容量，本变量未接"
 NOOP_NOTE_FN_PLE_INT8="官方 0.30.0 只有 BF16 锁页一档，INT8/磁盘驻留是旧镜像自研加载器（README-0300.md §3）"
 NOOP_NOTE_FN_PLE_LOC="$NOOP_NOTE_FN_PLE_INT8"
