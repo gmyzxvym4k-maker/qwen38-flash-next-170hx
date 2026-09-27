@@ -328,3 +328,18 @@ block table 对照——判定是「拷贝写错位置」还是「填的块不�
       需先确认/补丁。
    b) 调度器侧打印 `(group_idx, dst_block_ids, block_indices, num_external_tokens)`
       并在随后几步打印该请求 mamba 组的实际状态块 id，判定"回载块 ≠ 模型读的块"。
+
+---
+
+## 8. 【重要发现·第 7 轮】0.30.0 有**两条** KV 卸载实现，我们一直在调的是旧的那条
+
+用户问「0.30.0 是不是不支持内存二级缓存」——**支持，而且有两条**：
+
+| 实现 | 启用方式 | 代码 | 对 hybrid/mamba 的处理 |
+|---|---|---|---|
+| `OffloadingConnector`（经典，我们移植/调试的那条） | `--kv-transfer-config '{"kv_connector":"OffloadingConnector",...}'` | `v1/kv_offload/cpu/` | 自定义分组/chunk + CoW hand-off；**对本模型的 mamba 状态回载不成立**（§7 的全部结论） |
+| **`SimpleCPUOffloadConnector`**（新） | `VLLM_USE_SIMPLE_KV_OFFLOAD=1` + `--kv-offloading-size <GiB>`（`--kv-offloading-backend native\|lmcache`，缺省 native） | `v1/simple_kv_offload/` + `v1/.../simple_cpu_offload_connector.py` | **`class SimpleCPUOffloadConnector(KVConnectorBase_V1, SupportsHMA)`**；manager 里**显式**处理 `MambaSpec`（“keep their own block size”）、空块（“sliding window or mamba padding”）、hybrid 联合查找与边界；建在核心 BlockPool/KVCacheCoordinator 之上 |
+| 另外：`v1/simple_kv_offload/disk_backend.py` | 由 `disk_capacity_bytes>0` 启用（`kv_event_medium=MEDIUM_STORAGE`） | 同上 | **自带 NVMe 磁盘层**：独立 store/load IO 线程 + pinned staging buffer（用户提的“硬盘方案”在这条路径上是内建的） |
+
+⇒ 下一轮的正确实验是 **换成 `SimpleCPUOffloadConnector`**（`VLLM_USE_SIMPLE_KV_OFFLOAD=1 --kv-offloading-size 64`），**不用我们那套 rt-patch #9**：
+判据 = 同一 prompt「本地算 vs 中途 flush 后再算」答案是否都正确（经典连接器就死在这一条）+ `SupportsHMA` 是否让 mamba 状态按块正确回载。
