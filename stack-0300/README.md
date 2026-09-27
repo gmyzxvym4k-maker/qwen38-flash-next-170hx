@@ -1,43 +1,52 @@
-# stack-0300 —— 官方 vLLM 0.30.0 新栈产物（<DEPLOY_HOST>:18420）
+# stack-0300 —— 官方 vLLM 0.30.0 生产栈产物（18420，含内存二级缓存 KVCache）
 
-本目录收录 2026-09-26 起接管 18420 生产的**官方 vLLM 0.30.0 栈**（宿主
-`/home/ll/vllm-env` + PYTHONPATH 运行时补丁）的关键产物。与仓库其余部分
-（旧 chroot 定制镜像 v0.1.dev20073 路线的 22 文件补丁组）的关系：同一模型、
-同一端口的两代栈；旧栈的补丁语义如何映射到新栈见这里与机器上的
-`/home/ll/deploy/vllm-0300/README-0300.md`（**唯一权威操作文档**）。
+本目录收录 **当前生产栈**（2026-09-26 起接管 18420）的完整复刻件：官方 `vllm==0.30.0`
+（宿主 venv，**site-packages 零改动**）+ `PYTHONPATH` 运行时补丁（上游 8 hook + 本地扩展），
+以及 **KV 缓存二级层（GPU 显存 → 宿主内存 96 GiB，SimpleCPUOffloadConnector）**——
+生产实跑、有回载命中证据。唯一权威操作文档 = [`README-0300.md`](README-0300.md)
+（**§11 = 当前生产定版快照**，含逐字判据与从零复现步骤）。
+
+与仓库其余部分的关系：仓库主体（`patches/` 22 补丁 + `docs/01~09`）是**旧 chroot 定制镜像栈**
+（vLLM v0.1.dev20073）的复刻件，保留为回滚路线；两代栈同一模型、同一端口，补丁语义映射见
+`README-0300.md` §6。
 
 ## 目录内容
 
-| 文件 | 机器路径 | 说明 |
+| 文件 | 机器路径（部署机） | 说明 |
 |---|---|---|
-| `patches-extra/dsh_kvoff_rt.py` | 同名 | **rt-patch #9（2026-10-05）**：KV 二级缓存（OffloadingConnector）PP2 移植，语义对应旧栈 c1/c2/c6/c7（D 组） |
-| `patches-extra/sitecustomize.py` | 同名 | 本地扩展入口（#8 多模态 warmup 跳过 + #9 合并 dsh_kvoff_rt.PATCHES） |
-| `inner-flash-next-0300.sh` | `bin/flash-next-0300-inner.sh` | argv 装配（含 1005 新增的 FN_KVOFF/FN_KVOFF_BYTES/FN_KVOFF_WAIT_TIMEOUT 块） |
-| `start-flash-next-0300.sh` / `stop-flash-next-0300.sh` | 同名 | 宿主入口/停止 |
-| `selftest_kvoff_rt.py` | 同名 | rt-patch #9 离线自检（24 项判据，不占 GPU） |
+| `README-0300.md` | `vllm-0300/README-0300.md` | **权威文档**：补丁架构 / KV 二级缓存全史（§6.1~6.3）/ 回滚 / **§11 生产定版** |
+| `patches/sitecustomize.py` | `vllm-0300/patches/` | 上游运行时补丁入口（PP>1 解禁、auto-round PLE、>64GiB 锁页分块、FakeTensorMode 泄漏诊断等 8 处 hook；含 09-27 FP8-PLE 加载契约修正）。正源公开仓库 `CyrilCN/qwen38-flash-170hx-patches`，本副本=生产现行版 |
+| `patches-extra/sitecustomize.py` | `vllm-0300/patches-extra/` | 本地扩展入口（#8 多模态 warmup 跳过 + #9 合并 dsh_kvoff_rt 钩子） |
+| `patches-extra/dsh_kvoff_rt.py` | 同上 | 经典 OffloadingConnector 移植层 c1~c11（**已退役**，缺省惰性零影响；总闸 `DSH_KVOFF_RT_DISABLE=1`） |
+| `inner-flash-next-0300.sh` | `vllm-0300/bin/flash-next-0300-inner.sh` | argv 装配（`FN_SIMPLE_OFFLOAD=<GiB>` 一等开关，与 `FN_KVOFF=1` 互斥拒启；参数体检 CONSUMED/NOOP_NOTE） |
+| `start-flash-next-0300.sh` / `stop-flash-next-0300.sh` | `vllm-0300/` | 宿主入口 / 停止（SIGTERM→90s→SIGKILL 兜底，绝不先杀 worker） |
+| `fnx-18420-watchdog.sh` + `systemd/fnx-18420-watchdog.{service,timer}` | `/home/ll/deploy/`、`~/.config/systemd/user/` | 30s 探活自愈；卡死 py-spy 取证；**自愈安全模式会剥离 offload 档位**（防崩溃循环，带档回归需手工重放 launch.env） |
+| `kvoff-accept.sh` / `kvoff-churn.py` / `kvoff-soak-monitor.sh` / `tools/kvoff-restore-prod.sh` | `/home/ll/deploy/` | 生产档验收 / 挤池判据 / 5 分钟粒度 soak 记录（health·KV 水位·外部命中·Xid·内存）/ 恢复生产 |
+| `selftest_kvoff_rt.py` / `selftest_kvoff_c10.py` / `selftest.py` / `selftest_extra.py` | `vllm-0300/` | 补丁层离线自检（不占 GPU；改动补丁后必跑） |
+| `kvoff-c8-window.sh` / `kvoff-c10-window.sh` / `kvoff-fp8-window.sh` / `kvoff-*-{probe,verify,fresh,local,needle,scale,exact,tail,dbg,mon}.py` | `/home/ll/deploy/` | c1~c11 攻关期的实验窗口与判定小工具（历史证据可复跑） |
+| `ROUND2-verification.md` / `ROUND3-simple-offload-验收手册.md` / `README-c10-c11.md` | —— | KV 二级缓存三轮攻关证据链（假 0 命中根因、mamba 竞态、Simple 换道与验收） |
+| `quantize_ple_fp8.py` / `quantize_ple_fp8_v2.py` | —— | PLE FP8 离线量化器（v2 符合加载契约；GA100/SM80 无 FP8 单元硬件封路，留作记录） |
+| `tools/live-cmdline-0300.txt` / `tools/live-env-0300.txt` | —— | **生产实跑真值快照（2026-09-27 20:20，读自 /proc/<APIServer>）** |
 
-## rt-patch #9（KV 二级缓存恢复）要点
+## 内存二级缓存（KVCache）一分钟版
 
-- **缺省惰性**：不配 `--kv-transfer-config` 时 offloading 模块不被导入，钩子不触发，
-  对生产零影响；紧急总闸 `DSH_KVOFF_RT_DISABLE=1` 使全部回调变 no-op。
-- 启用：`FN_KVOFF=1 [FN_KVOFF_BYTES=<字节>] bash start-flash-next-0300.sh`，
-  或 8889 弹窗「CPU KV 二级缓存」=开（plan 下发 FN_KVOFF/FN_KVOFF_BYTES）。
-- 移植取舍（对照旧栈 D 组）：c1 分组过滤、c2 PP 私有 pinned、c6 有界等待+store
-  熔断只读降级、c7 双向强制 Triton 绕开 cuMemcpyBatchAsync；
-  c3/c5a 与 fill 观测指标（03/13/15）不再需要——metrics 断言源头是我们自加
-  的 key，eagle 双罚上游 0.30.0 已原生修复（无标注分组时全部按 non-draft）。
-- 容量铁律沿用旧栈：物理钉住 ≈1.56×配置；容量须 > GPU 池（≈122 万 tok、
-  store 侧 ≈40.4 KB/token）才有回载收益；本机历史结论「GPU 池自扛 ~90%、
-  21h 零外部回载」——启用前先想清楚负载形态。
-
-## 验证状态（1005）
-
-- 自检 24 项全绿：`cd /home/ll/deploy/vllm-0300 && PYTHONPATH=$PWD/patches:$PWD/patches-extra \
-  /home/ll/vllm-env/bin/python selftest_kvoff_rt.py`
-- inner 四态 dry-run 正确（缺省/=0 不带参数且体检无告警；=1 注入 JSON）。
-- **未做**：FN_KVOFF=1 实机验证窗口（需停机重启 ~8 分钟，由使用者择时执行）。
+- **开法**：`FN_SIMPLE_OFFLOAD=96 bash start-flash-next-0300.sh`（launch.env / 8889 控制台同效）；
+  实际给引擎的是 `--kv-offloading-size 96` + `VLLM_USE_SIMPLE_KV_OFFLOAD=1`。
+- **容量**：CPU 档 ≈ 348.6 万 token = **2.9× GPU 池**（1,207,262 token / 776 块）；
+  只对「已被挤出 GPU 池、之后又被重发」的长前缀产生收益。
+- **实测**：挤池 >1.2M token 后重发，~100k prompt 命中 **97%**、~40k **93%**、~12k **80%**
+  由内存档回载（零头=每请求末块 ≤1616 不入库）；验证码精准复述=内容无损；
+  生产 45 分钟 `vllm:external_prefix_cache_hits_total`=143,824。
+- **为什么安全**：Simple 连接器显式 `SupportsHMA`，源码跳过 `has_positionally_stable_blocks=False`
+  的组（mamba/GDN）→ 只卸载/回载位置稳定的注意力组；拷贝在后台线程独立流上按
+  compute-done 事件排序完成，不回踩经典连接器在 PP2 上的两类事故
+  （cuMemcpyBatchAsync 冻结 compute 流 / store 期间 mamba 活写竞态）。
+- **经典连接器退役史**（c1~c11：环形分组排除 / PP 私有 pinned / 公共区前缀和 / 有界等待+熔断 /
+  aggregate 丢件悬挂根因…）全文见 `README-0300.md` §6.1~6.3 与 ROUND 文档——这段弯路本身就是
+  本交付件最有价值的踩坑记录。
 
 ## 脱敏说明
 
-机器版脚本内置本机 sudo 口令；**本仓库副本一律改为 `${SUDO_PASS:?}` 注入**，
-直接执行前先 `export SUDO_PASS=<口令>`。内网 IP 保留（自用部署仓库）。
+脚本内 sudo 凭据一律 `SUDO_PASS` 环境变量注入（未设即报错退出）；内网 IP 写作
+`<DEPLOY_HOST>` / `<EXTERNAL_HOST>`；机器路径按现状保留；**git 历史已经净化重写**
+（发布时全文扫描口令/IP 零命中）。
