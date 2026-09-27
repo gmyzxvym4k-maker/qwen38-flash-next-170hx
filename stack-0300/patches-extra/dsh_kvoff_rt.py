@@ -123,6 +123,14 @@ def _patch_offloading_config(m):
 
     def filtered(kv_cache_config):
         ids = tuple(fn(kv_cache_config))
+        # 【对照开关·2026-09-27】FN_KVOFF_NO_C1=1：不做剔除（保留上游全部分组，
+        # 含 QSA 环形组 block=8）。用于判定「剔除环形组是否扰乱了 canonical page 编号
+        # / writer rotation」——若保留后引擎仍能起且回载内容变正确，则 c1 剔除即根因。
+        if os.environ.get("FN_KVOFF_NO_C1", "0").strip().lower() in (
+            "1", "true", "yes", "on",
+        ):
+            _log("c1: FN_KVOFF_NO_C1=1 -> 不做剔除，offload 分组=%s" % (list(ids),))
+            return ids
         keep, dropped = [], []
         for gid in ids:
             group = kv_cache_config.kv_cache_groups[gid]
@@ -843,6 +851,9 @@ def _patch_cpu_gpu_worker(m):
             groups = [gi for gi, n in enumerate(_gs or []) if n]
             out = []
             _pos = 0
+            _canon = self._fill_group_ops == self._fill_canonical_ops
+            _log("dbg[xfer] layout: canonical=%s src_bpc=%s dst_bpc=%s"
+                 % (_canon, self.src_blocks_per_chunk, self.dst_blocks_per_chunk))
             for gi in groups:
                 # 【修正·2026-09-27】多组 job 的 id 是**按组顺序排布**的：第 gi 组用
                 # 第 _pos 个 id（此前一律取 [0]，对 load 的多组 job 是错的）。
@@ -850,16 +861,20 @@ def _patch_cpu_gpu_worker(m):
                 did = int(dst_spec.block_ids[_pos])
                 _pos += int(_gs[gi])
                 tidx = sorted({r.tensor_idx for r in self.layer_refs_per_group[gi]})
-                fs = fd = 0
+                fs = fd = fs_all = fd_all = 0
                 for i in tidx:
                     tt = self.src_tensors[i]
                     nn = min(2048, int(tt.shape[1]))
                     fs = (fs * 1000003 + int(tt[sid, :nn].to(_t.int32).sum().item())) % (1 << 61)
+                    fs_all = (fs_all * 1000003 + int(
+                        tt[sid].to(_t.int32).sum().item())) % (1 << 61)
                 for i in tidx:
                     tt = self.dst_tensors[i]
                     nn = min(2048, int(tt.shape[1]))
                     fd = (fd * 1000003 + int(tt[did, :nn].to(_t.int32).sum().item())) % (1 << 61)
-                out.append((gi, fs, fd))
+                    fd_all = (fd_all * 1000003 + int(
+                        tt[did].to(_t.int32).sum().item())) % (1 << 61)
+                out.append((gi, fs, fd, fs_all, fd_all))
             return out, None, None, groups
 
         def transfer_async(self, job_id, src_spec, dst_spec):
@@ -881,16 +896,18 @@ def _patch_cpu_gpu_worker(m):
                 try:
                     dbg_post = _dsh_cap(self, src_spec, dst_spec)
                     pre, sid, did, groups = dbg_pre
-                    post = {gi: (fs, fd) for gi, fs, fd in dbg_post[0]}
+                    post = {gi: (fs, fd, fa, fda) for gi, fs, fd, fa, fda in dbg_post[0]}
                     direction = "store(GPU->CPU)" if self.gpu_to_cpu else "load(CPU->GPU)"
-                    for gi, fs, fd in pre:
-                        fs2, fd2 = post.get(gi, (None, None))
+                    for gi, fs, fd, fa, fda in pre:
+                        fs2, fd2, fa2, fda2 = post.get(gi, (None, None, None, None))
                         _log(
-                            "dbg[xfer] #%d %s g=%d src/src'=%s/%s dst/dst'=%s/%s "
-                            "dst_changed=%s src==dst'=%s"
+                            "dbg[xfer] #%d %s g=%d head src/src'=%s/%s dst/dst'=%s/%s "
+                            "FULL src/src'=%s/%s dst/dst'=%s/%s | head_dst_changed=%s "
+                            "head_ok=%s full_ok=%s"
                             % (
-                                self.__dict__["_dsh_dbg_xfer"][0], direction, gi, fs, fs2,
-                                fd, fd2, fd != fd2, fs == fd2,
+                                self.__dict__["_dsh_dbg_xfer"][0], direction, gi,
+                                fs, fs2, fd, fd2, fa, fa2, fda, fda2,
+                                fd != fd2, fs == fd2, fa == fda2,
                             )
                         )
                 except Exception as exc:
