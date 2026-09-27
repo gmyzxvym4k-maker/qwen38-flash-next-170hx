@@ -60,7 +60,11 @@ fake_cfg = types.SimpleNamespace(
                      _grp(True, []), _grp(True, ["e"])],
 )
 kept = off_cfg.get_offloading_group_ids(fake_cfg)
-check("c1 剔除不可缓存/空层分组，保留全局 id", kept == (0, 1, 4), str(kept))
+# 2026-09-27 修正：只剔除 prefix_cacheable=False 的组；**空层分组必须保留**
+# （PP>1 时各 rank 只带自己的层名，空组是合法占位；剔除会让 worker 的
+#  group 数与 scheduler 不一致 → store 断言/越界）。
+check("c1 只剔除不可缓存分组、保留空层分组与全局 id",
+      kept == (0, 1, 3, 4), str(kept))
 
 # ---------------------------------------------------------------- c2
 check("c2 _uses_shared_region 已包裹",
@@ -79,9 +83,12 @@ check("c7 swap_blocks_triton.MIN_N=0", getattr(sbt, "MIN_N", None) == 0)
 check("c7 _select_swap_blocks_fn 已包裹",
       getattr(cpu_gw._select_swap_blocks_fn, "_dsh_c7", False))
 refs = [[types.SimpleNamespace(page_size_bytes=1616 * 2048)]]
-f = cpu_gw._select_swap_blocks_fn(refs, gpu_to_cpu=True)
-check("c7 store 方向也走 Triton（不再 ops.swap_blocks_batch）",
-      getattr(f, "func", None) is sbt.swap_blocks_batch, str(f))
+f_store = cpu_gw._select_swap_blocks_fn(refs, gpu_to_cpu=True)
+check("c7 store 方向回落到上游 C++ DMA（Triton 会 MMU fault）",
+      f_store is cpu_gw.ops.swap_blocks_batch, str(f_store))
+f_load = cpu_gw._select_swap_blocks_fn(refs, gpu_to_cpu=False)
+check("c7 load 方向仍强制 Triton swap 内核",
+      getattr(f_load, "func", None) is sbt.swap_blocks_batch, str(f_load))
 
 # ---------------------------------------------------------------- c6 metadata
 M = off_common.OffloadingWorkerMetadata
