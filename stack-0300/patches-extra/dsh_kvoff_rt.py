@@ -836,7 +836,76 @@ def _patch_cpu_gpu_worker(m):
         def transfer_async(self, job_id, src_spec, dst_spec):
             if self.gpu_to_cpu and getattr(self, "_dsh_stalled", False):
                 return False  # 熔断后拒绝入队，由 connector 走失败 ack
-            return orig_transfer_async(self, job_id, src_spec, dst_spec)
+            ok = orig_transfer_async(self, job_id, src_spec, dst_spec)
+            # 【诊断·2026-09-27】store/load 的指针算术对照：同一 chunk 在
+            # 两个方向上的 host/device 偏移必须自洽，否则回载内容就是错的
+            # （现象：本地算/本地缓存命中都对，CPU 回载乱码）。
+            if _dbg_on():
+                try:
+                    cnt = self.__dict__.setdefault("_dsh_dbg_xfer", [0])
+                    cnt[0] += 1
+                    if cnt[0] <= 8:
+                        direction = "store(GPU->CPU)" if self.gpu_to_cpu else "load(CPU->GPU)"
+                        trs = getattr(self, "_transfers", None) or []
+                        tr = trs[-1] if trs else None
+                        gs = getattr(src_spec, "group_sizes", None)
+                        if gs is None:
+                            gs = getattr(dst_spec, "group_sizes", None)
+                        _log(
+                            "dbg[xfer] #%d %s job=%s src_ids=%s dst_ids=%s group_sizes=%s "
+                            "page_sizes=%s"
+                            % (
+                                cnt[0],
+                                direction,
+                                job_id,
+                                list(getattr(src_spec, "block_ids", [])[:6]),
+                                list(getattr(dst_spec, "block_ids", [])[:6]),
+                                list(gs) if gs is not None else None,
+                                [[r.page_size_bytes for r in g]
+                                 for g in self.layer_refs_per_group],
+                            )
+                        )
+                        if tr is not None:
+                            _log(
+                                "dbg[xfer] #%d num_bytes=%s src_ptr[0:4]=%s dst_ptr[0:4]=%s "
+                                "sizes[0:4]=%s"
+                                % (
+                                    cnt[0],
+                                    getattr(tr, "num_bytes", None),
+                                    [hex(int(x)) for x in
+                                     tr.batch_src.flatten()[:4].tolist()],
+                                    [hex(int(x)) for x in
+                                     tr.batch_dst.flatten()[:4].tolist()],
+                                    tr.batch_sizes.flatten()[:4].tolist(),
+                                )
+                            )
+                        # 【指纹】把该 job 首个 chunk 的 host 行前 2KB 打个指纹：
+                        # store 写完后打一次、load 读之前打一次，同一个 chunk id
+                        # 两次指纹若不同 ⇒ host 行在中间被覆盖（布局冲突/行复用）
+                        try:
+                            import torch as _t
+
+                            host = self.dst_tensors if self.gpu_to_cpu else self.src_tensors
+                            ids = list(
+                                (dst_spec if self.gpu_to_cpu else src_spec).block_ids
+                            )[:1]
+                            if ids:
+                                cid = int(ids[0])
+                                fp = 0
+                                for tt in host[:8]:
+                                    n = min(2048, int(tt.shape[1]))
+                                    fp = (fp * 1000003 + int(
+                                        tt[cid, :n].to(_t.int32).sum().item()
+                                    )) % (1 << 61)
+                                _log(
+                                    "dbg[xfer] #%d %s chunk=%d host_fp=%d"
+                                    % (cnt[0], direction, cid, fp)
+                                )
+                        except Exception as exc:
+                            _log("dbg[xfer] 指纹失败：%r" % (exc,))
+                except Exception as exc:  # 诊断绝不影响数据面
+                    _log("dbg[xfer] 记录失败：%r" % (exc,))
+            return ok
 
         def wait(self, job_ids):
             """有界等待；返回超时未完成的 job 集合（原版返回 None）。"""
@@ -1235,8 +1304,48 @@ def _patch_offloading_scheduler(m):
     S.update_connector_output = update_connector_output
     S._build_aligned_boundary_store_jobs = aligned_guarded
     S._build_partial_tail_store_jobs = partial_guarded
+    _dsh_maybe_force_partial_tail(S, m)
     if _dbg_on():
         _install_sched_debug(S)
+
+
+# ---------------------------------------------------------------------------
+# c13（实验开关）：强制 supports_partial_tail=True
+#
+# 背景：本模型（GDN/mamba hybrid + QSA 环形组）实测 `supports_partial_tail=False`。
+# 上游 from_spec 的判定里 `len(group_block_sizes) == 1`（所有组 block 相同）在
+# 「环形组 block=8」存在时天然不成立；而该开关控制的正是**部分尾块**的
+# 存/取边界协同（mamba 状态所在边界与注意力 KV 所在边界对齐）。
+# 现象（2026-09-27）：本地算/本地缓存命中都对，CPU 回载却输出乱码，
+# 高度怀疑就是「存进去的 mamba 状态边界」与「装进来的注意力前缀边界」不一致。
+# 用法：FN_KVOFF_FORCE_PARTIAL_TAIL=1（缺省关，纯实验）。
+# ---------------------------------------------------------------------------
+def _dsh_maybe_force_partial_tail(S, m):
+    if os.environ.get("FN_KVOFF_FORCE_PARTIAL_TAIL", "0").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return
+    C = getattr(m, "SchedulerOffloadConfig", None)
+    if C is None or getattr(C, "_dsh_pt", False):
+        return
+    orig = C.from_spec
+
+    def from_spec(cls, spec, vllm_config, kv_cache_config):
+        cfg = orig(spec, vllm_config, kv_cache_config)
+        try:
+            if not cfg.supports_partial_tail:
+                _log("c13: 强制 supports_partial_tail False -> True（实验开关）")
+                cfg = cfg._replace(supports_partial_tail=True)
+        except Exception as exc:
+            _log("c13: 强制 partial tail 失败（忽略）：%r" % (exc,))
+        return cfg
+
+    C._dsh_pt = True
+    C.from_spec = classmethod(from_spec)
+    _log("c13: supports_partial_tail 强制器已挂（FN_KVOFF_FORCE_PARTIAL_TAIL=1）")
 
 
 # ---------------------------------------------------------------------------
