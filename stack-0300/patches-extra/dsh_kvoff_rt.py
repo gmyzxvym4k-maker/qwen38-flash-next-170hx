@@ -70,6 +70,39 @@ import time
 
 _DISABLED = os.environ.get("DSH_KVOFF_RT_DISABLE", "") == "1"
 
+# ---------------------------------------------------------------------------
+# c10（2026-09-27）：悬挂 pending 自愈 —— 修「请求 deferred 永挂」的真故障。
+#
+# 现场（window7，实例 11:13 起）：engine 空转（Running 0 / Waiting 1 / Deferred 1），
+# GPU KV 占用 0%，而 cpu_cache_write_usage_perc == cpu_cache_usage_perc == 0.2405
+# ⇒ 786 个 chunk 里 189 个永远停在「写待完成」（ref_cnt=-1）。scheduler 的
+# _maximal_prefix_lookup 只要碰到 HIT_PENDING 就返回 None ⇒ 请求转 deferred、
+# 不停重查（实测 lookup_sync_delay 计数 10 分钟 2 → 5925），而 chunk 永不 ready。
+# 结果是：**一个丢失的 store 完成通知，会让整条二级缓存变成永久挂死源**。
+#
+# 对策（不改上游，纯运行时）：
+#   c10a manager 侧：pending chunk 超 TTL 未 ready ⇒ 从 policy 摘除 + 归还 chunk 池，
+#        lookup 随即变 MISS（请求照常走本地 prefill，不再 deferred）。
+#   c10b scheduler 侧：超 TTL 未收尾的 job 强制 complete_store(success=False) 并摘除，
+#        让 has_pending_push_work() 能落回 False（否则引擎会带着空批一直转）。
+#   两者都只读/自愈，不引入新数据面；FN_KVOFF_PENDING_TTL / FN_KVOFF_JOB_TTL 可调，
+#   设 0 关闭。
+# ---------------------------------------------------------------------------
+_PENDING_TTL_DEFAULT = 120.0
+_JOB_TTL_DEFAULT = 180.0
+
+
+def _env_ttl(name, default):
+    raw = os.environ.get(name, "")
+    if raw == "":
+        return default
+    try:
+        v = float(raw)
+    except ValueError:
+        _log("c10: %s=%r 无法解析为秒，回落缺省 %.0fs" % (name, raw, default))
+        return default
+    return v  # <=0 表示关闭
+
 
 def _log(msg):
     import sys
@@ -867,8 +900,19 @@ def _patch_offloading_common(m):
         self.fuse_tripped = bool(ft)
 
     def aggregate(self, other):
+        # [c11 修复·2026-09-27] **必须把 other.completed_jobs 也并进来**。
+        # 上游语义（connector/v1/offloading/common.py:92-104）：每个 worker 报
+        # {job_id: 1}，aggregate 逐 job 求和，调度器要等 pending_count（=num_workers）
+        # 减到 0 才认定完成。c6 覆盖版当年只写了 dict(self.completed_jobs)，
+        # 把 other 的完成数丢了 ⇒ PP2 下每个 job 永远只记 1 次完成、pending_count 停在 1
+        # ⇒ complete_store 永不调用 ⇒ chunk 永远 ref_cnt=-1 ⇒ lookup 恒 HIT_PENDING
+        # ⇒ 请求永久 deferred（window7 挂死）+ CPU→GPU 恒 0（清点得出：09-27 c10 窗口
+        # 实测 105/786 chunk 长挂、store_bytes 却在涨、external hits 恒 0）。
+        merged_jobs = dict(self.completed_jobs)
+        for job_id, cnt in getattr(other, "completed_jobs", {}).items():
+            merged_jobs[job_id] = merged_jobs.get(job_id, 0) + cnt
         merged = M(
-            completed_jobs=dict(self.completed_jobs),
+            completed_jobs=merged_jobs,
             transfer_stats=self.transfer_stats.aggregate(other.transfer_stats),
         )
         fj = dict(self.failed_jobs)
@@ -1158,6 +1202,14 @@ def _patch_offloading_scheduler(m):
             if job_id in self._jobs:
                 _try_finish(job_id, count, True)
 
+        # [dsh-kvoff c10b] 超时未收尾的 job 强制收尾：否则 _jobs 永非空 ⇒
+        # has_pending_push_work() 恒真（引擎带空批空转），且这些 job 的 chunk
+        # 永远停在 ref_cnt=-1（lookup 恒 HIT_PENDING ⇒ 请求永久 deferred）。
+        try:
+            _dsh_reap_stale_jobs(self)
+        except Exception as exc:  # 自愈失败绝不影响正常调度
+            logger.error("[dsh-kvoff c10b] stale-job reap 抛错（忽略）：%r", exc)
+
     def aligned_guarded(self, *a, **k):
         if getattr(self, "_dsh_stores_disabled", False):
             return {}
@@ -1175,6 +1227,183 @@ def _patch_offloading_scheduler(m):
     S._build_partial_tail_store_jobs = partial_guarded
 
 
+# ---------------------------------------------------------------------------
+# c10a：manager 侧 pending 自愈
+# ---------------------------------------------------------------------------
+def _patch_cpu_manager(m):
+    if _DISABLED:
+        return
+    C = getattr(m, "CPUOffloadingManager", None)
+    if C is None or getattr(C, "_dsh_c10", False):
+        return
+    for attr in ("prepare_store", "lookup", "get_stats", "_free_chunk"):
+        if not hasattr(C, attr):
+            _log("c10a: CPUOffloadingManager 缺 %s（版本漂移？）-> 跳过 manager 补丁" % attr)
+            return
+    C._dsh_c10 = True
+
+    orig_prepare_store = C.prepare_store
+    orig_lookup = C.lookup
+    orig_get_stats = C.get_stats
+
+    def _track(self):
+        d = self.__dict__.get("_dsh_pending")
+        if d is None:
+            d = self.__dict__["_dsh_pending"] = {}
+            self.__dict__["_dsh_reaped"] = 0
+            self.__dict__["_dsh_log_ts"] = 0.0
+        return d
+
+    def prepare_store(self, keys, req_context):
+        out = orig_prepare_store(self, keys, req_context)
+        if out is not None:
+            d = _track(self)
+            now = time.monotonic()
+            for k in out.keys_to_store:
+                d.setdefault(k, now)
+        return out
+
+    def _reap_one(self, key):
+        """摘掉一个超时未 ready 的 pending chunk（等价于 complete_store 失败路径）。"""
+        chunk = self._policy.get(key)
+        if chunk is None or chunk.is_ready:
+            return False
+        self._policy.remove(key)
+        if chunk.ref_cnt < 0:
+            self._num_write_pending_chunks = max(0, self._num_write_pending_chunks - 1)
+        self._free_chunk(chunk)
+        self.__dict__["_dsh_reaped"] = self.__dict__.get("_dsh_reaped", 0) + 1
+        return True
+
+    def _sweep(self, now):
+        d = self.__dict__.get("_dsh_pending")
+        if not d:
+            return 0
+        ttl = _env_ttl("FN_KVOFF_PENDING_TTL", _PENDING_TTL_DEFAULT)
+        if ttl <= 0:
+            return 0
+        n = 0
+        for key, t0 in list(d.items()):
+            chunk = self._policy.get(key)
+            if chunk is None or chunk.is_ready:
+                d.pop(key, None)
+                continue
+            if now - t0 >= ttl:
+                if _reap_one(self, key):
+                    n += 1
+                d.pop(key, None)
+        return n
+
+    def lookup(self, key, req_context):
+        d = self.__dict__.get("_dsh_pending")
+        if d and key in d:
+            chunk = self._policy.get(key)
+            if chunk is None or chunk.is_ready:
+                d.pop(key, None)
+            else:
+                ttl = _env_ttl("FN_KVOFF_PENDING_TTL", _PENDING_TTL_DEFAULT)
+                if ttl > 0 and time.monotonic() - d[key] >= ttl:
+                    _reap_one(self, key)
+                    d.pop(key, None)
+        return orig_lookup(self, key, req_context)
+
+    def get_stats(self):
+        now = time.monotonic()
+        reaped = _sweep(self, now)
+        st = orig_get_stats(self)
+        d = self.__dict__.get("_dsh_pending") or {}
+        if d and now - self.__dict__.get("_dsh_log_ts", 0.0) >= 60.0:
+            self.__dict__["_dsh_log_ts"] = now
+            _log(
+                "c10a[manager]: write_pending=%d/%d tracked=%d oldest=%.0fs "
+                "reaped(total/this_tick)=%d/%d evictable=%d allocated=%d free=%d"
+                % (
+                    self._num_write_pending_chunks,
+                    self._num_chunks,
+                    len(d),
+                    now - min(d.values()),
+                    self.__dict__.get("_dsh_reaped", 0),
+                    reaped,
+                    self._num_evictable_cache_chunks,
+                    self._num_allocated_chunks,
+                    len(self._free_list),
+                )
+            )
+        return st
+
+    C.prepare_store = prepare_store
+    C.lookup = lookup
+    C.get_stats = get_stats
+    _log(
+        "c10a: CPUOffloadingManager pending 自愈已挂（pending_ttl=%ss）"
+        % _env_ttl("FN_KVOFF_PENDING_TTL", _PENDING_TTL_DEFAULT)
+    )
+
+
+# ---------------------------------------------------------------------------
+# c10b：scheduler 侧超时 job 强制收尾
+# ---------------------------------------------------------------------------
+def _dsh_reap_stale_jobs(sched):
+    ttl = _env_ttl("FN_KVOFF_JOB_TTL", _JOB_TTL_DEFAULT)
+    if ttl <= 0:
+        return 0
+    now = time.monotonic()
+    seen = sched.__dict__.setdefault("_dsh_job_seen", {})
+    stats = sched.__dict__.setdefault("_dsh_job_reaped", [0, 0.0])
+    stale = []
+    for job_id in list(sched._jobs):
+        t0 = seen.setdefault(job_id, now)
+        if now - t0 >= ttl:
+            stale.append((job_id, now - t0))
+    for job_id in list(seen):
+        if job_id not in sched._jobs:
+            seen.pop(job_id, None)
+
+    reaped = 0
+    for job_id, age in stale:
+        js = sched._jobs.get(job_id)
+        if js is None:
+            continue
+        req_status = sched._req_status.get(js.req_id)
+        ctx = req_status.req_context if req_status is not None else None
+        try:
+            if js.is_store:
+                sched.manager.complete_store(js.keys, ctx, success=False)
+            else:
+                sched.manager.complete_load(js.keys, ctx)
+                if sched._chunks_being_loaded:
+                    sched._chunks_being_loaded.difference_update(js.keys)
+        except Exception as exc:  # 自愈路径绝不炸调度
+            _log("c10b: job %d 强制收尾时 manager 抛错（忽略）：%r" % (job_id, exc))
+        for bids in (js.fenced_block_ids, js.deferred_fence_block_ids):
+            for bid in bids or ():
+                try:
+                    sched._remove_pending_job(job_id, [bid])
+                except Exception:
+                    pass
+        sched._jobs.pop(job_id, None)
+        if req_status is not None:
+            req_status.transfer_jobs.discard(job_id)
+        sched.__dict__.get("_dsh_failed_seen", set()).discard(job_id)
+        seen.pop(job_id, None)
+        reaped += 1
+        _log(
+            "c10b: 强制收尾超时 job %d（%.0fs 未完成，is_store=%s keys=%d）"
+            % (job_id, age, js.is_store, len(js.keys))
+        )
+
+    if reaped or sched._jobs:
+        stats[0] += reaped
+        if now - stats[1] >= 60.0:
+            stats[1] = now
+            oldest = max((now - t for t in seen.values()), default=0.0)
+            _log(
+                "c10b[scheduler]: jobs=%d oldest=%.0fs reaped_total=%d "
+                "push_work=%s" % (len(sched._jobs), oldest, stats[0], bool(sched._jobs))
+            )
+    return reaped
+
+
 PATCHES = {
     "vllm.distributed.kv_transfer.kv_connector.v1.offloading.config":
         _patch_offloading_config,
@@ -1185,6 +1414,7 @@ PATCHES = {
     "vllm.distributed.kv_transfer.kv_connector.v1.offloading.scheduler":
         _patch_offloading_scheduler,
     "vllm.v1.kv_offload.cpu.spec": _patch_cpu_spec,
+    "vllm.v1.kv_offload.cpu.manager": _patch_cpu_manager,
     "vllm.v1.kv_offload.cpu.gpu_worker": _patch_cpu_gpu_worker,
     "vllm.v1.kv_offload.cpu.swap_blocks_triton": _patch_swap_triton,
 }

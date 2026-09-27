@@ -1,0 +1,2 @@
+FN_MAXLEN=65536
+FN_EXTRA_ARGS="--num-gpu-blocks-override 80"
