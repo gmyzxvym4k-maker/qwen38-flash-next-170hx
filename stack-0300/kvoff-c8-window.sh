@@ -41,7 +41,7 @@ chk() { # chk <名称> <0/1> <详情>
 }
 SUDO() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 health() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$PORT/health"; }
-xid_count() { SUDO dmesg 2>/dev/null | grep -cE "NVRM: *Xid" || true; }
+xid_count() { SUDO timeout 30 dmesg 2>/dev/null | grep -cE "NVRM: *Xid" || true; }
 shm_used() { df -B1 --output=used /dev/shm 2>/dev/null | tail -1 | tr -d ' '; }
 mem_avail() { awk '/^MemAvailable:/{print $2*1024}' /proc/meminfo; }
 
@@ -137,7 +137,7 @@ if [ "$MODE" != "judge" ]; then
   bash "$BASE/stop-flash-next-0300.sh" "$PORT" >> /home/ll/deploy/kvoff-c8-window.log 2>&1
   # 等显存归零（幽灵显存 = 启动失败第一嫌疑）
   for i in $(seq 1 30); do
-    busy=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | wc -l)
+    busy=$(timeout 20 nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | wc -l)
     [ "$busy" = "0" ] && break
     sleep 5
   done
