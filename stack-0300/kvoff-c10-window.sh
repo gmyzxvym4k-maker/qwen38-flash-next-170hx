@@ -217,7 +217,7 @@ chk "health=200（启动完成）" 0 "耗时见日志"
 
 judge "$OFF"
 say ">>> 探针（$PROBE_ARGS）"
-"$PY" "$PROBE" --endpoint "http://127.0.0.1:$PORT/v1" $PROBE_ARGS | tee -a "$RES"
+"$PY" "$PROBE" --endpoint "http://127.0.0.1:$PORT/v1" $PROBE_ARGS 2>&1 | tee -a "$RES"
 PR=$?
 chk "探针三项判据（external hits>0 且 CPU→GPU>0 且验证码复述）" "$PR" "退出码 $PR"
 metrics_dump
@@ -226,11 +226,27 @@ X1=$(xid_count)
 chk "零新增 Xid（GPU 未被拷贝路径打挂）" "$([ "$X1" = "$X0" ] && echo 0 || echo 1)" "基线=$X0 现在=$X1"
 
 if [ "$FAIL" -gt 0 ]; then
-  say ">>> 有 $FAIL 项失败 ⇒ 自动回滚 FN_KVOFF=0"
-  rollback
+  # 【迭代通道·2026-09-27】KEEP_ANY=1：无论判据是否全绿都保留测试实例，用于在**不重启**
+  # （省 6~8 分钟冷启）的前提下反复重跑探针调参。收尾必须手工回生产：
+  #   bash /home/ll/deploy/kvoff-restore-prod.sh
+  if [ "${KEEP_ANY:-0}" = "1" ]; then
+    say ">>> 有 $FAIL 项失败，但 KEEP_ANY=1 ⇒ 保留测试实例供迭代探针（未回滚）"
+    say ">>> 收尾必须执行：bash /home/ll/deploy/kvoff-restore-prod.sh"
+  else
+    say ">>> 有 $FAIL 项失败 ⇒ 自动回滚 FN_KVOFF=0"
+    rollback
+  fi
 else
-  say ">>> 全绿。要不要把公共区固化成生产态：写进 launch.env + 快启预设 + 弹窗默认（三源同步）"
-  systemctl --user start "$WATCHDOG" 2>/dev/null || true
+  # 【加固·2026-09-27】过去「全绿」会把测试实例（max-model-len 65536 + 小池位）留在盘上
+  # 且不回落 —— 这正是 09-27 那次「生产被静默起成测试参数」事故的成因。现在默认**也回滚
+  # 到生产态**，只有显式 KEEP_TEST=1 才保留测试实例继续观察。
+  if [ "${KEEP_TEST:-0}" = "1" ]; then
+    say ">>> 全绿（KEEP_TEST=1）⇒ 保留测试实例，看门狗恢复托管"
+    systemctl --user start "$WATCHDOG" 2>/dev/null || true
+  else
+    say ">>> 全绿 ⇒ 结果已留档，仍回滚到生产态 FN_KVOFF=0（要保留测试实例用 KEEP_TEST=1）"
+    rollback
+  fi
 fi
 say "总结：PASS=$PASS FAIL=$FAIL  结果文件 $RES"
 [ "$FAIL" = "0" ] || exit 1

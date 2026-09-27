@@ -784,6 +784,16 @@ def _patch_cpu_gpu_worker(m):
     if sel is not None and not getattr(sel, "_dsh_c7", False):
 
         def sel_patched(layer_refs_per_group, gpu_to_cpu):
+            # 【排障开关·2026-09-27】FN_KVOFF_LOAD_CPP=1：load 也不强制 Triton，
+            # 直接走上游 C++ 拷贝路径。用于判定「回载后输出乱码」是否出在
+            # 我们的 Triton swap 内核（store 方向仍走上游，不受影响）。
+            if os.environ.get("FN_KVOFF_LOAD_CPP", "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            ):
+                return sel(layer_refs_per_group, gpu_to_cpu)
             # ⚠️ 铁律：GPU→CPU（store）绝不能走 Triton。上游 gpu_worker.py:41-43
             # 显式让该方向走拷贝引擎；2026-09-27 实测强行切 Triton 会在
             # store 时让 SM 内核解引用 host 指针 → MMU Fault VIRT_WRITE → Xid31
@@ -1225,6 +1235,148 @@ def _patch_offloading_scheduler(m):
     S.update_connector_output = update_connector_output
     S._build_aligned_boundary_store_jobs = aligned_guarded
     S._build_partial_tail_store_jobs = partial_guarded
+    if _dbg_on():
+        _install_sched_debug(S)
+
+
+# ---------------------------------------------------------------------------
+# 诊断通道（FN_KVOFF_DEBUG=1）：把 "store 了哪些 key / lookup 查了哪些 key、结果如何"
+# 逐条打出来。专治「存了但从不命中」——只有把两侧的 OffloadKey 摆在一起看，
+# 才能区分「key 不一致」与「policy 里根本没有」。
+# ---------------------------------------------------------------------------
+def _dbg_on():
+    return os.environ.get("FN_KVOFF_DEBUG", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _dbg_group_of(key):
+    try:
+        return int.from_bytes(key[-4:], "big", signed=False)
+    except Exception:
+        return -1
+
+
+def _install_manager_debug(C):
+    """包在 c10a 外层：记录 store 侧 key 与 lookup 侧 key/结果。"""
+    orig_ps = C.prepare_store
+    orig_lk = C.lookup
+    seen = {}
+    st = {"store_jobs": 0, "store_keys": 0, "lookup": 0, "hit": 0, "pending": 0, "miss": 0}
+
+    def prepare_store(self, keys, req_context):
+        out = orig_ps(self, keys, req_context)
+        try:
+            if out is not None and out.keys_to_store:
+                rid = getattr(req_context, "req_id", "?")
+                groups = {}
+                for k in out.keys_to_store:
+                    g = _dbg_group_of(k)
+                    groups[g] = groups.get(g, 0) + 1
+                st["store_jobs"] += 1
+                st["store_keys"] += len(out.keys_to_store)
+                _log(
+                    "dbg[store] req=%s n=%d groups=%s first=%s last=%s"
+                    % (
+                        rid,
+                        len(out.keys_to_store),
+                        sorted(groups.items()),
+                        out.keys_to_store[0].hex()[:20],
+                        out.keys_to_store[-1].hex()[:20],
+                    )
+                )
+        except Exception as exc:
+            _log("dbg[store] 记录失败：%r" % (exc,))
+        return out
+
+    def lookup(self, key, req_context):
+        r = orig_lk(self, key, req_context)
+        try:
+            rid = getattr(req_context, "req_id", "?")
+            n = seen.get(rid, 0) + 1
+            seen[rid] = n
+            name = getattr(r, "name", None) or str(r).rsplit(".", 1)[-1]
+            st["lookup"] += 1
+            if name == "HIT":
+                st["hit"] += 1
+            elif name == "HIT_PENDING":
+                st["pending"] += 1
+            else:
+                st["miss"] += 1
+            # 每个请求只记头 24 条；命中/待定一律记（命中是我们要的稀有事）
+            if n <= 24 or name != "MISS":
+                _log(
+                    "dbg[lookup] req=%s i=%d g=%d key=%s -> %s "
+                    "(累计 hit=%d pend=%d miss=%d)"
+                    % (
+                        rid,
+                        n,
+                        _dbg_group_of(key),
+                        key.hex()[:20],
+                        name,
+                        st["hit"],
+                        st["pending"],
+                        st["miss"],
+                    )
+                )
+        except Exception as exc:
+            _log("dbg[lookup] 记录失败：%r" % (exc,))
+        return r
+
+    C.prepare_store = prepare_store
+    C.lookup = lookup
+    _log("dbg: manager 侧 key 诊断已挂（FN_KVOFF_DEBUG=1）")
+
+
+def _install_sched_debug(S):
+    """scheduler 侧：每个请求只记一次最终的 get_num_new_matched_tokens 结果 + 分组画像。"""
+    orig = S.get_num_new_matched_tokens
+    seen = {}
+
+    def get_num_new_matched_tokens(
+        self, request, num_computed_tokens, max_num_new_tokens=None
+    ):
+        res, async_ = orig(self, request, num_computed_tokens, max_num_new_tokens)
+        rid = getattr(request, "request_id", "?")
+        try:
+            if rid not in seen:
+                seen[rid] = 1
+                gs = [
+                    (
+                        g.group_idx,
+                        g.tokens_per_chunk,
+                        g.sliding_window_size_in_chunks,
+                        g.requires_cow_source,
+                        g.is_eagle_group,
+                    )
+                    for g in self.config.kv_group_configs
+                ]
+                _log(
+                    "dbg[sched] req=%s prompt=%d computed=%d -> %r async=%s "
+                    "sliding_groups=%s mamba_align=%s blocks_per_chunk=%s "
+                    "partial_tail=%s groups(idx,tpc,sw,cow,eagle)=%s"
+                    % (
+                        rid,
+                        request.num_prompt_tokens,
+                        num_computed_tokens,
+                        res,
+                        async_,
+                        self._sliding_window_groups,
+                        self._mamba_align_size,
+                        self.config.blocks_per_chunk,
+                        self.config.supports_partial_tail,
+                        gs,
+                    )
+                )
+        except Exception as exc:
+            _log("dbg[sched] 记录失败：%r" % (exc,))
+        return res, async_
+
+    S.get_num_new_matched_tokens = get_num_new_matched_tokens
+    _log("dbg: scheduler 侧 lookup 诊断已挂")
 
 
 # ---------------------------------------------------------------------------
@@ -1338,6 +1490,8 @@ def _patch_cpu_manager(m):
         "c10a: CPUOffloadingManager pending 自愈已挂（pending_ttl=%ss）"
         % _env_ttl("FN_KVOFF_PENDING_TTL", _PENDING_TTL_DEFAULT)
     )
+    if _dbg_on():
+        _install_manager_debug(C)
 
 
 # ---------------------------------------------------------------------------
