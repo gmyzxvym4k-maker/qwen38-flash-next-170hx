@@ -458,16 +458,45 @@ CPU 档里的块**必然同时还在 GPU 池里** ⇒ 查表永远在 GPU 侧满
 
 **卡死现场（这是本轮最有价值的发现）**：探针发完 55 000 token 建档请求后，第二个请求
 （挤池文档）进入 `Waiting: 1 / Deferred: 1`，然后**引擎日志整段静默 9 分 30 秒**
-（11:20:00 → 11:29:30，引擎 logger 本就每 10 s 一行 ⇒ 说明 EngineCore 主循环被阻塞），
-恢复后 `Avg prompt throughput: 17.0 tokens/s`（正常 5 200+）、`Running: 0 / Waiting: 1`，
-GPU KV 占用 0.0%，`kv_offload_cpu_cache_usage_perc` 钉在 0.2404 不再增长。
+（11:20:00 → 11:29:30；统计行是 per-step 打的，静默 = 这 9 分半里**只跑了极少数 step**，
+其中一次吞吐 17.0 tok/s，正常 5 200+），`Running: 0`、GPU KV 占用 0.0%、
+`kv_offload_cpu_cache_usage_perc` 钉在 0.2404 不再增长。
 时间上**紧跟着一次 store 突发**（11:19:40–11:19:50 单区间 store 651 MB、累计 1.98 GB）。
 
-**机制指向**：`store` 方向仍是上游 **C++ 批量拷贝（`cuMemcpyBatchAsync`）**——
-启动日志自证：`c7: 仅 CPU->GPU(load) 方向强制 Triton swap 内核；store 方向保持上游 C++ DMA`。
-而 09-24 的 c7 定案正是「`cuMemcpyBatchAsync` 与 PP2 NCCL-P2P 并发会冻结 compute 流」。
-c8 之前那条路径是**崩**（`error 1` / Xid31）；c8 把宿主缓冲正确注册（`cudaHostRegister` 无失败）后，
-同样的争用变成了**卡**。⇒ 卡死与 c8 布局无关，与 **store 的拷贝 API** 有关（待证）。
+**机制指向（源码级，2026-09-27 补充）**：`Deferred` 不是队列慢，而是**调度器主动拒绝调度**——
+`offloading/scheduler.py:643 _maximal_prefix_lookup()` 只有在整段前缀要么 `HIT` 要么 `MISS` 时才
+返回可调度；一旦某个 chunk 返回 `LookupResult.HIT_PENDING`（"在档里但还不可读"）或 `RETRY`，
+函数**返回 `None` ⇒ 该请求本轮不调度**（`scheduler.py:665/695/986`）。而 `HIT_PENDING` 的判据是
+`cpu/manager.py:134` 的 `chunk.is_ready`——**只有 store 作业完成才会置 ready**。
+⇒ **"某个 store 作业永远不完成" = 该请求被无限期 defer**，这正是窗口 7 的现场
+（store 累计停在 8.299 GB、`write_usage_perc` 钉在 0.2404 不再增长、请求 9 分半不动）。
+另外 `store` 方向仍是上游 **C++ 批量拷贝（`cuMemcpyBatchAsync`）**（启动日志自证：
+`c7: 仅 CPU->GPU(load) 方向强制 Triton swap 内核；store 方向保持上游 C++ DMA`），
+09-24 的 c7 定案正是它在 PP2 下冻结 compute 流 ⇒ **"store 作业卡住"的第一嫌疑就是它**（待坐实）。
+
+**跨会话交叉证据（并行会话的 c10 窗口，2026-09-27 11:42–12:02，脚本/补丁未入本仓库）**：
+该会话给 offload 作业加了 TTL（`FN_KVOFF_JOB_TTL=60` / `FN_KVOFF_PENDING_TTL=45`，即"卡住就放弃"），
+在**更极端的 40 块池**（≈39.7 k token = GPU 池的 3.3%）跑 `--tokens 30000 --docs 1 --flush 5`：
+
+| 项 | 结果 |
+|---|---|
+| 结构判据（含共享区、物理钉住 1.00、零 Xid） | 14 PASS / 1 FAIL（FAIL=探针三项判据） |
+| **"探针后无 deferred 请求残留"** | **PASS（deferred=0）** ⇒ 加了 TTL 后不再永久挂住 |
+| store（GPU→CPU） | 真实落地 7.55 GB（≈200 k token 的量级，即内容确实进档了） |
+| CPU 档使用率 | 13.4%（远未满 ⇒ 不存在 LRU 驱逐） |
+| `external_prefix_cache_hits_total` | **0**（`external_queries=248 533`，`prefix_hits_total` 也是 0） |
+| CPU→GPU 回载 | **0** |
+
+⇒ **两个独立会话、两种池大小（80 块 / 40 块）、都确认"存得进、档未满、但一次都不命中"。**
+这把问题的性质从"容量不够"彻底改写成 **"命中路径（key 对不上或 store 未 ready）"**：
+- 若是 key 对不上：store 时算的 offload key 与 lookup 时算的不一致（本模型是多组 hybrid +
+  MTP4 投机，key 由各分组块哈希合成，分组/draft 标注差异足以让两侧 key 分叉）；
+- 若是 ready 判定：`is_ready` 依赖 store 作业完成回调，作业卡住 ⇒ 永远是 `HIT_PENDING`
+  （此时 `lookup` 会返回 HIT_PENDING 而不是 MISS ⇒ 请求被 defer，与"两个窗口都没崩却都没命中"吻合）。
+
+**下一步的决定性实验**：在一次窗口里**把 store 时的 key 与 reload 时的 key 各打印前 N 条做比对**
+（`cpu/manager.py` 的 `prepare_store` / `lookup` 各插一行日志），一次即可区分上面两条。
+这比再调容量/池大小有意义得多。
 
 ### 下一步的三条候选（按性价比排序）
 
@@ -626,14 +655,19 @@ bash /home/ll/deploy/start-flash-next-w4a16.sh           # ③ 起旧栈（注�
    低优先（不影响正确性，只影响可调性）。
 8. **把现行「双字段 + 哨兵」栈路由做成幂等重打脚本**并收入本仓库：目前唯一的重打脚本
    `redirect-console-watchdog-0300.py` 是已被取代的首版做法，误用会废掉旧栈回滚能力（见 §9 末）。
-9. 【KVOFF 归因 A/B，最高优先】同 `--num-gpu-blocks-override 80` 但 `FN_KVOFF=0` 跑同一探针：
-   若也卡 ⇒ 卡死与小 GPU 池本身有关（"压小池逼命中"的测量手法不成立），KVOFF 无罪。
-   不改代码，只换一次启动参数，~20 分钟（含冷启）。
+9. 【KVOFF 归因，最高优先】**打印 store 时的 key 与 reload 时的 key 比对本**（在
+   `v1/kv_offload/cpu/manager.py` 的 `prepare_store` / `lookup` 各插一行，只打前 N 条哈希）——
+   一次窗口即可区分「key 对不上」还是「store 未 ready（HIT_PENDING 一直挂）」。
+   这比继续调池大小/容量有意义得多（两种池大小 80/40 块都已确认"存得进、档未满、零命中"）。
 10. 【KVOFF 换温和压力档】命中只需 `P < C`，用 `--num-gpu-blocks-override 700`（≈695 k token
-    < C≈1.12 M）即可，比 80 块（只剩 6.6%）温和得多，`P+B < F ≤ C−B` 的可操作窗口也更大。
+    < C≈1.12 M）即可，比 40/80 块温和得多，`P+B < F ≤ C−B` 的可操作窗口也更大。
 11. 【c10 候选】把 **store 方向**也切到 Triton SM 内核：c7 当年只改 load，理由是"私有路径
     缓冲未注册、Triton 会 MMU fault"；c8 的公共区已 `cudaHostRegister` 成功 ⇒ 该前提不成立。
     上游 `gpu_worker.py` 显式写着 "GPU→CPU 不要用 Triton"，故须带 Xid 监控做受控实验。
+12. 【跨会话协调·长期】同一时刻只允许一个会话在 18420 上跑验证窗口：2026-09-27 两个会话
+    的窗口**互相打断**（11:36 我的窗口实例被另一个会话 stop，我的探针/脚本被 SIGTERM，
+    窗口 7 没跑到回滚；12:02 起对方又连跑两轮），结论容易被污染。
+    判据：`ps -eo pid,args | grep [k]voff` + `/home/ll/deploy/*kvoff*` 的 mtime。
 
 **并行会话风险（本机长期事实）**：`/home/ll/deploy/server.js` 会被其它会话基于旧基线整文件写回。
 本次 22:02:44 就发生过一次——重定向与判据补丁被抹掉、控制台被重启。判据：改完记下 md5，
