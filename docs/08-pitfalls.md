@@ -355,6 +355,8 @@
   比自建复现+core 分析快一个数量级。
 
 ### P60 【更正 P59】attrIdxs 是误诊；根因=批量 cuMemcpyBatchAsync API 本身在本机驱动上不稳定，正解=逐块 cuMemcpyAsync（rt-patch #11）
+
+> ⚠️ **本节的「批量 API 不稳定」结论也已被 P61 推翻**（#11 后生产仍崩）：真正根因是 PP2 CPU 块 id 空间越界，两种 API 只是同吃一个坏地址。保留本节以存证推理链。
 - **P59 的根因判断错了，勿采信**。09-27 打上 rt-patch #10（attrIdxs 改 count 元素零数组）的实例
   （21:06 就绪）仍在 21:51 同签名 segfault（core：`cuda-EvtHandlr.7142`，栈全在 libcuda，无
   Xid/MCE/Python 帧），当日第三次崩溃。三次都发生在带二级缓存的实例、时间尺度一致（26~59 分钟），
@@ -402,6 +404,6 @@
 | `read_ahead_kb=0` | 权重加载慢 10.9×（P28） |
 | TP2 代替 PP2 | 无 P2P 时每步约 192 次 all-reduce 走 host SHM，更慢 |
 | 经典 OffloadingConnector 在本模型常驻（含 c1~c11 全部修法） | hybrid mamba 活写竞态，回载不等价（P54），退役；用 SimpleCPUOffloadConnector |
-| SimpleCPU 二级缓存用批量 `cuMemcpyBatchAsync`（上游原版 `copy_blocks`，以及 rt-patch #10 的 attrIdxs 零数组"修复"） | 间歇 PP1 segfault（运行 26~59 分钟即崩）。attrIdxs 越界是**误诊**（P59，见 P60 更正）：按契约 `attrsIdxs` 长度=numAttrs，原标量本就合法，#10 实为无操作。真正正解 = rt-patch #11 改逐块 `cuMemcpyAsync`，彻底绕开批量 API（P60） |
+| SimpleCPU 二级缓存间歇 PP1 segfault，先后按「attrIdxs 越界（#10）」「批量 API 不稳定（#11）」修复均失败 | 两条都是**误诊**（P59→P60→P61 两次更正）。最终根因=**PP2 下调度器与 worker 的 CPU 块 id 空间口径分裂**，越界地址喂给驱动（P61）。正解=rt-patch #13 握手 clamp |
 | 「加大 pinned 到 >GPU 池」在 251 GB 内存机上硬做 | PLE 95 GB + 私有 pinned 1.56× 必超配，MCE 硬挂风险（P56） |
 | MTP6 / MTP1 在本档 | MTP6 触发 QSA ring 断言（P04）；MTP1 实测比 MTP4 慢 22% |
