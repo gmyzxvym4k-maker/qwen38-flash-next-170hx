@@ -136,7 +136,14 @@ export VLLM_PLE_CPU_OFFLOAD=1
 echo "[FN-0300] PLE 表：官方 BF16 锁页（pinned CPU 95.4 GiB，PP rank0 独占），由 rt-patch 分块 cuMemHostRegister(<=60 GiB)" >&2
 
 # ---------------------------------------------------------------- 并行/显存
-export VLLM_PP_LAYER_PARTITION="${FN_PP_PARTITION:-26,22}"
+# [tp-presets 0928] VLLM_PP_LAYER_PARTITION 只在 PP>1 时有意义，且上游按
+# 「列表长度 == pp_size」强校验（"26,22" 长度 2 ≠ pp=1 → 启动 ValueError）。
+# 控制台 plan 在 TP 档下发 FN_PP_PARTITION=none；PP 档不带该值走缺省 26,22。
+if [ "${FN_PP_PARTITION:-}" = "none" ]; then
+  echo "[FN-0300] 并行=TP${FN_TP:-1}×PP1：不设 VLLM_PP_LAYER_PARTITION" >&2
+else
+  export VLLM_PP_LAYER_PARTITION="${FN_PP_PARTITION:-26,22}"
+fi
 export CUDA_VISIBLE_DEVICES="${FN_CUDA_VISIBLE_DEVICES:-0,1}"
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
@@ -149,6 +156,9 @@ export VLLM_USE_FLASHINFER_SAMPLER=0
 export FLASHINFER_DISABLE_VERSION_CHECK=1
 # 多模态 warmup 跳过（rt-patch #8，本地扩展补丁）
 export VLLM_SKIP_MM_WARMUP=1
+# [v3 0928→1006] 每请求输出真值流（rt-patch #11 + dsh_vllm_logger stream）：
+# 插件把本变量打进 vllm-live-stream.jsonl 每行 port 字段 → 控制台多实例归属。
+export DSH_ENGINE_PORT="${FN_PORT:-18420}"
 # NCCL：与旧栈实跑逐项一致（P2P 已打通，走 PHB 级放行）
 export NCCL_CUMEM_ENABLE=0
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
@@ -161,9 +171,9 @@ export NCCL_SHM_DISABLE=0
 
 # ---------------------------------------------------------------- argv
 # 采样参数：09-21 定版三源一致值（治循环复读）。旧栈实跑 argv 是漂移态
-# （temperature 1 / presence 0 / repetition 1），此处按定版值，见 README-0300.md §4。
+# （t0.6/presence0.1/rep1.05 反循环定档，09-29 拍板，取代 09-27 的 1/0/1——后者导致思考模型 token 级硬循环），见 README-0300.md §4。
 # [gendefault 0927] 采样缺省定档 t1.0/p0.95/k20/minp0/pp0/rp1.0（与 server.js SCRIPT_MODELS.base 逐字段一致）
-GENCFG_DEFAULT='{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0,"repetition_penalty":1.0}'
+GENCFG_DEFAULT='{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.1,"repetition_penalty":1.05}'
 CHATKW_DEFAULT='{"enable_thinking":true,"preserve_thinking":true}'
 
 BLOCK=${FN_BLOCK:-1616}
