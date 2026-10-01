@@ -159,11 +159,15 @@ export VLLM_SKIP_MM_WARMUP=1
 # [v3 0928→1006] 每请求输出真值流（rt-patch #11 + dsh_vllm_logger stream）：
 # 插件把本变量打进 vllm-live-stream.jsonl 每行 port 字段 → 控制台多实例归属。
 export DSH_ENGINE_PORT="${FN_PORT:-18420}"
-# NCCL：与旧栈实跑逐项一致（P2P 已打通，走 PHB 级放行）
+# NCCL：与旧栈实跑逐项一致。
+# [p2pfix 1001] 09-30 cmpunlocker 重编混入 BAR1 P2P 强制上报补丁（0011/0015/0016），
+# 驱动把 P2P 报 OK 但数据通路静默损坏（实测 32MB 跨卡拷贝 data ok=False），
+# NCCL allreduce 测试内核无限自旋 → 启动卡死在 pynccl._init_comm（10-01 实锤）。
+# 禁用 P2P 走 SHM 传输（09-24 实测 P2P 与 SHM 吞吐持平，decode 不受影响）。
 export NCCL_CUMEM_ENABLE=0
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 export NCCL_NET_GDR_LEVEL=0
-export NCCL_P2P_LEVEL="${NCCL_P2P_LEVEL:-PHB}"
+export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
 export NCCL_SHM_DISABLE=0
 
 # 旧栈专有、官方 0.30.0 无读取方的 env 不再下发（VLLM_PLE_MMAP*、VLLM_PLE_GDS*、
@@ -213,6 +217,8 @@ ARGS=(
 if [ "${FN_PREFIX_CACHE:-1}" = "0" ]; then ARGS+=(--no-enable-prefix-caching); else ARGS+=(--enable-prefix-caching); fi
 if [ "${FN_CHUNKED:-1}" = "0" ]; then ARGS+=(--no-enable-chunked-prefill); else ARGS+=(--enable-chunked-prefill); fi
 if [ "${FN_ASYNC:-1}" = "0" ]; then ARGS+=(--no-async-scheduling); else ARGS+=(--async-scheduling); fi
+# [p2pfix 1001] custom allreduce 走 P2P IPC，坏通路上会静默污染推理数据 → 显式关闭
+ARGS+=(--disable-custom-all-reduce)
 
 # 调度策略（1005 补）：plan 在用户选非 fcfs 时下发 FN_SCHED_POLICY，此前本脚本不消费
 # → 弹窗选「优先级」只落一条"未实现"警告、引擎仍走 fcfs。AsyncScheduler 继承 Scheduler
