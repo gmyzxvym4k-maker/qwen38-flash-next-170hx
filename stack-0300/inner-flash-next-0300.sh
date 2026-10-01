@@ -175,9 +175,9 @@ export NCCL_SHM_DISABLE=0
 
 # ---------------------------------------------------------------- argv
 # 采样参数：09-21 定版三源一致值（治循环复读）。旧栈实跑 argv 是漂移态
-# （t0.6/presence0.1/rep1.05 反循环定档，09-29 拍板，取代 09-27 的 1/0/1——后者导致思考模型 token 级硬循环），见 README-0300.md §4。
+# （t0.6/presence0.2/rep1.15 反循环加固档，10-01 定案（0.1/1.05 在污染上下文会话压不住 uct 硬循环）；gpu-mem 内置缺省同步 0.93（10-01 预算定案：1M 准入 KV≥15.0GiB + 每卡瞬态激活头寸 ~5GiB，0.95 头寸归零触发 OOM 重试、0.91 已实证运行期硬 OOM 猝死），取代 09-27 的 1/0/1——后者导致思考模型 token 级硬循环），见 README-0300.md §4。
 # [gendefault 0927] 采样缺省定档 t1.0/p0.95/k20/minp0/pp0/rp1.0（与 server.js SCRIPT_MODELS.base 逐字段一致）
-GENCFG_DEFAULT='{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.1,"repetition_penalty":1.05}'
+GENCFG_DEFAULT='{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.2,"repetition_penalty":1.15}'
 CHATKW_DEFAULT='{"enable_thinking":true,"preserve_thinking":true}'
 
 BLOCK=${FN_BLOCK:-1616}
@@ -197,7 +197,7 @@ ARGS=(
   --block-size "$BLOCK"
   --mamba-ssm-cache-dtype "${FN_SSMDTYPE:-float32}"
   --max-num-seqs "${FN_SEQS:-4}"
-  --gpu-memory-utilization "${FN_GPUMEM:-0.95}"
+  --gpu-memory-utilization "${FN_GPUMEM:-0.93}"
   --enable-prompt-tokens-details
   --max-num-batched-tokens "${FN_MBTOKENS:-8192}"
   # 必须 auto：草稿 MoE 层未量化，显式 marlin 会 ValueError
