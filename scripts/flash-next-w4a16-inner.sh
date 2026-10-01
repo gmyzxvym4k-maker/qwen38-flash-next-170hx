@@ -115,7 +115,7 @@ mkdir -p "$VLLM_CACHE_ROOT" 2>/dev/null || true
 # export NCCL_P2P_DISABLE=1
 export NCCL_SHM_DISABLE=0
 # 0919 关键：GA100 双卡为 PHB 拓扑（同桥异根端口），NCCL 默认 P2P 级别 LOC 不跨 PHB，必须显式放行（见 CMP170HX-P2P-打通记录.md §2.5）
-export NCCL_P2P_LEVEL=PHB  # 0919 A/B 定版：P2P 生效（via P2P/IPC），性能与 SHM 持平，保留 P2P（省 CPU 中继）
+export NCCL_P2P_DISABLE=1  # [p2pfix 1001] 09-30 驱动 BAR1 P2P 补丁数据通路损坏（拷贝校验失败），禁用走 SHM
 export NCCL_CUMEM_ENABLE=0
 export NCCL_NET_GDR_LEVEL=0
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"  # 0919 实验结束回 WARN（实验期曾临时 INFO）
