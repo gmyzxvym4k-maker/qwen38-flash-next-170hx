@@ -72,6 +72,7 @@ ARGS=(
   --trust-remote-code
   --language-model-only
   --enable-cache-report
+  --enable-metrics
   --default-chat-template-kwargs "$CTKwargs"
   --preferred-sampling-params "$GENCFG"
 )
