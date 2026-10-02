@@ -8,6 +8,13 @@
 > **当前生产 = 官方 vLLM 0.30.0 运行时补丁栈，并已开启「KV 缓存内存二级层」
 > （GPU 显存 → 宿主内存 96 GiB，`SimpleCPUOffloadConnector`，实测被挤出显存的前缀 80~97% 由内存档回载）**——
 > 复刻入口 [`stack-0300/`](stack-0300/README.md)，权威文档 [`stack-0300/README-0300.md`](stack-0300/README-0300.md) **§11 生产定版**。
+>
+> 🔄 **2026-10-03 生产栈再切换：现行 18420 = SGLang 0.5.21**（PP2 + NEXTN 投机，
+> 定长实测 **118 tok/s**，高于 vLLM 栈 MTP4 ~90；验收全绿，看门狗已切 sglang 自愈）。
+> **复现现行生产请看 [`stack-sglang/`](stack-sglang/README.md)**（启动件、5 个运行时补丁、
+> 9 个必踩坑：权重翻倍泄漏 gc 修复 / NEXTN draft 必须 `--speculative-draft-model-quantization unquant` /
+> FA2 编译 / tilelang cccl 旁路等）。官方 vLLM 0.30.0 栈（下文 §1~§11 与 `stack-0300/`）**保留为回滚路径**，
+> 两套栈的启停与看门狗互斥（同一时刻只跑一套）。
 > 本仓库主体（`patches/` 22 补丁组 + `docs/01~09`，本文 §2 起）是上一代 chroot 定制镜像栈的复刻件，
 > 保留为回滚路线，补丁闭环验证最完整（§2 的图景与命令都是旧栈的）。
 >
