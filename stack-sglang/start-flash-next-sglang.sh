@@ -4,6 +4,9 @@
 # 参数透传：SG_* 环境变量落盘 envfile，sudo 内 source（与 FN_*/launch.env 同机制）。
 set -u
 BASE=/home/ll/deploy/sglang-18420
+# [stack-route-fix-1003] 置 SGLang 栈哨兵：与 vLLM 栈启动脚本的清哨兵动作互斥配对，
+# 保证控制台栈路由始终跟随实际启动的栈。
+: > /home/ll/deploy/sglang-18420/ACTIVE
 LOG=${SG_LOG:-/home/ll/deploy/sglang-18420.log}
 PORT=${SG_PORT:-18420}
 SUDO_PASS=${SUDO_PASS:?需要先 export SUDO_PASS（仓库不携带口令）}

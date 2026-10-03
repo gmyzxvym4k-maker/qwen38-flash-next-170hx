@@ -28,7 +28,7 @@ case "$PORT" in (*[!0-9]*|'') PORT=18420;; esac
 # SUDO_PASS 覆盖），与 start-flash-next-*.sh / stop-flash-next-w4a16.sh 一致。
 # 铁律：sudo -S 的密码走管道，命令尾部绝不加 < /dev/null（会覆盖管道）。
 if [ "$(id -u)" != "0" ]; then
-  echo "${SUDO_PASS:?本副本已脱敏：先 export SUDO_PASS=<部署机 sudo 口令>}" | sudo -S -p '' bash "$0" "$PORT"
+  echo "${SUDO_PASS:?本副本已脱敏：先 export SUDO_PASS=<部署机 sudo 口令>}" | sudo -S -p '' STOP_LIST_ONLY="${STOP_LIST_ONLY:-}" bash "$0" "$PORT"
   exit $?
 fi
 
