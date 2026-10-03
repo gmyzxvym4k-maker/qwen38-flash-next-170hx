@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """在线功能验收：工具调用 / 思考模式 / 长上下文 / 流式。只读，不改任何状态。"""
-import json, time, urllib.request, sys
+import json, time, urllib.request, sys  # noqa: E401
 
 B = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:18420"
 M = sys.argv[2] if len(sys.argv) > 2 else "qwen3.8-flash-next"
@@ -91,6 +91,31 @@ def main():
     bad = sum(out.count(x) for x in ("、。", "。，", "，，", "。。"))
     print("[5 标点自检] %.1fs 异常标点组合=%d 输出=%r" % (t, bad, out[:50]))
     ok &= (bad == 0)
+
+    # 6) 复读探针（P62：token 级病理正则 + 句子级循环窗；不传 sampling → 端到端检验服务端
+    #    --override-generation-config 反循环定档在工作，这正是"部署者防复读"的含义）。
+    #    判据一（硬）：content+reasoning 合并不得命中病理指纹（uct/duct 连排、连环标点）。
+    #    判据二（硬）：句子级循环窗——同一 10 字窗重复 >=10 次判病理。
+    #                  （2026-10-03 生产实跑标定：健康 xhigh 思考输出最差窗=3，
+    #                   思考预算耗尽 finish=length 的健康输出最差窗=7，真句子复读>>10；
+    #                   勿再把阈值收回 3——会把"正常长思考"误判成复读。）
+    #    判据三（软提示）：finish=length=思考预算耗尽，非病灶；需要时可把 max_tokens 调到
+    #                  >=3000 或用 chat_template_kwargs 选 medium/low 思考档。
+    import re as _re
+    d, t = post("/v1/chat/completions", {
+        "model": M,
+        "messages": [{"role": "user",
+                      "content": "请以连贯中文写一篇约四百字的短文，介绍显存分页管理（paged attention）的原理与工程权衡。"}],
+        "max_tokens": 1500})
+    msg = d["choices"][0]["message"]
+    full = ((msg.get("content") or "") + "\n" + (msg.get("reasoning") or msg.get("reasoning_content") or ""))
+    pathological = bool(_re.search(r"(uct|duct){2,}|[，。；]{5,}", full))
+    win = [full[i:i + 10] for i in range(0, max(len(full) - 10, 1))]
+    worst = max((win.count(w) for w in set(win)), default=0) if win else 0
+    fr = d["choices"][0]["finish_reason"]
+    hint = "（提示：思考预算耗尽，非病灶）" if (fr == "length" and worst < 10) else ""
+    print("[6 复读探针] %.1fs finish=%s 病理指纹=%s 最差10字窗重复=%d%s" % (t, fr, pathological, worst, hint))
+    ok &= (not pathological) and worst < 10
 
     print("\n" + ("✓ 在线功能验收全部通过" if ok else "✗ 有用例未通过，见 docs/08 对照"))
     return 0 if ok else 1

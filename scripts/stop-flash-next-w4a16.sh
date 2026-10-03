@@ -14,6 +14,8 @@ fi
 # 正解：SIGTERM 等满 90s；僵尸(Z)不计入存活；超时不退才 SIGKILL 兜底。
 # 进程识别：vLLM setproctitle 改名 VLLM::EngineCore / VLLM::Worker_PP0/1（comm 截断 15 字符）；
 # 主 APIServer 的 comm 恒为 python3，只能按 cmdline 的 entrypoints.cli.main 匹配（括号防自匹配）。
+# 人工停止闩锁（09-26）：置位后看门狗不再拉起，直到任一 start 脚本清除（与新栈同机制）
+: > /home/ll/deploy/fnx-manual-stop
 SUDO sh -c '
 find_pids() {
   { ps -eo pid=,comm= | awk "\$2 ~ /^VLLM::/ {print \$1}"

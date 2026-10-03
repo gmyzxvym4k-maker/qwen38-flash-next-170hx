@@ -45,22 +45,24 @@ export VLLM_PLE_CPU_OFFLOAD=1
 # 兼容：FN_PLE_LOC 未传（旧手动命令/旧预设）→ INT8=0 视作 heap（与 09-22 前逐字一致）、
 #   INT8=1 视作 disk。回滚手动命令 FN_PLE_INT8=0 语义不变。
 FN_PLE_INT8="${FN_PLE_INT8:-1}"
+# [FN-PLE-DIR] INT8 产物目录可被 FN_PLE_INT8_DIR 覆盖（不同 checkpoint 的 n-gram 表内容不同，禁止跨模型复用）
+PLE_INT8_DIR="${FN_PLE_INT8_DIR:-/media/ll/data/ple}"
 if [ -z "${FN_PLE_LOC:-}" ]; then
   if [ "$FN_PLE_INT8" = "0" ]; then FN_PLE_LOC=heap; else FN_PLE_LOC=disk; fi
 fi
 # 精度定精度、位置定内存/硬盘，两者正交（四种组合都成立）：
 #   INT8+内存 = VLLM_PLE_INT8_MEMORY 匿名堆 48.3GiB（[FN-PLE-INT8MEM] 引擎侧新增）
-if [ "$FN_PLE_LOC" = "heap" ] && [ "$FN_PLE_INT8" = "1" ] && [ -f /media/ll/data/ple/ple_ngram_meta.json ]; then
+if [ "$FN_PLE_LOC" = "heap" ] && [ "$FN_PLE_INT8" = "1" ] && [ -f $PLE_INT8_DIR/ple_ngram_meta.json ]; then
   export VLLM_PLE_DISK_RESIDENT=1
-  export VLLM_PLE_INT8_DIR=/media/ll/data/ple
+  export VLLM_PLE_INT8_DIR=$PLE_INT8_DIR
   export VLLM_PLE_INT8_MEMORY=1
-  echo "[FN-PLE-INT8] PLE 表走 INT8 内存驻留：/media/ll/data/ple (47.7+0.6 GiB 匿名堆，不可回收，零磁盘 I/O)" >&2
+  echo "[FN-PLE-INT8] PLE 表走 INT8 内存驻留：$PLE_INT8_DIR：47.7+0.6 GiB 匿名堆，不可回收，零磁盘 I/O" >&2
 elif [ "$FN_PLE_LOC" = "heap" ]; then
   echo "[FN-PLE-LOC] PLE 表 BF16 内存驻留（匿名堆 95.4GiB，不可回收）" >&2
-elif [ "$FN_PLE_INT8" = "1" ] && [ -f /media/ll/data/ple/ple_ngram_meta.json ]; then
+elif [ "$FN_PLE_INT8" = "1" ] && [ -f $PLE_INT8_DIR/ple_ngram_meta.json ]; then
   export VLLM_PLE_DISK_RESIDENT=1
-  export VLLM_PLE_INT8_DIR=/media/ll/data/ple
-  echo "[FN-PLE-INT8] PLE 表走 INT8 磁盘驻留：/media/ll/data/ple (47.7+0.6 GiB, 可回收页缓存)" >&2
+  export VLLM_PLE_INT8_DIR=$PLE_INT8_DIR
+  echo "[FN-PLE-INT8] PLE 表走 INT8 磁盘驻留：$PLE_INT8_DIR (47.7+0.6 GiB, 可回收页缓存)" >&2
 else
   export VLLM_PLE_DISK_RESIDENT=1
   echo "[FN-PLE-LOC] PLE 表走 BF16 磁盘驻留（mmap safetensors，零堆，可回收页缓存）" >&2
@@ -157,7 +159,9 @@ if [ "${FN_LONGCTX:-0}" = "1" ]; then
   echo "[FN-LONGCTX] 模型切到 YaRN 副本 $MODEL_PATH (factor=${FN_YARN_FACTOR:-?}, 副本上限=${LC_CAP:-?}, 本次 max-model-len=$FN_MAXLEN_EFF)" >&2
 fi
 # 采样参数缺省（可被 FN_GENCFG 覆盖；与 server.js SCRIPT_MODELS.base、快启预设 p2p-mtp4 一致）
-GENCFG_DEFAULT='{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.1,"repetition_penalty":1.05}'
+# [gendefault 0927] 采样缺省定档 t1.0/p0.95/k20/minp0/pp0/rp1.0（与 server.js SCRIPT_MODELS.base 逐字段一致）
+GENCFG_DEFAULT='{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.2,"repetition_penalty":1.15}'
+CHATKW_DEFAULT='{"enable_thinking":true,"preserve_thinking":true}'
 
 ARGS=(
   serve "$MODEL_PATH"
@@ -175,7 +179,7 @@ ARGS=(
   # gavinxym 手册：sharded mamba cache dtype 不一致 → float32 必传
   --mamba-ssm-cache-dtype "${FN_SSMDTYPE:-float32}"
   --max-num-seqs "${FN_SEQS:-4}"
-  --gpu-memory-utilization "${FN_GPUMEM:-0.95}"
+  --gpu-memory-utilization "${FN_GPUMEM:-0.93}"
   --enable-prefix-caching
   --enable-prompt-tokens-details
   --max-num-batched-tokens "${FN_MBTOKENS:-8192}"
@@ -186,7 +190,7 @@ ARGS=(
   --enable-auto-tool-choice
   --tool-call-parser qwen3_coder
   --trust-remote-code
-  --default-chat-template-kwargs '{"enable_thinking":true,"preserve_thinking":true}'
+  --default-chat-template-kwargs "${FN_CHATKWARGS:-$CHATKW_DEFAULT}"
   # 【2026-09-21 复读修复】temperature 0.3→0.6、repetition_penalty 1.0→1.05、presence_penalty 0→0.1。
   # 0.3 是 09-19 为 MTP 接受率（34.1%→38.9%、decode 92→100 tok/s）刻意调低的，代价=循环复读；
   # 用户拍板优先治复读。presence 仅给 0.1（09-19 实验证高 presence 显著伤 MTP 接受率）。
@@ -209,6 +213,10 @@ ARGS=(
 # 此前"图模式 >8K prompt 必 Xid31"的实验未限制 capture_sizes（默认捕获大量
 # 尺寸），本次严格照抄参考机的 [1,2,4,8,16,24,32,40]。
 # 回滚：FN_EAGER=1 恢复 --enforce-eager。
+# 【2026-09-26】控制台弹窗字段 enforceEager 经 server.js 下发的键是 FN_ENFORCE_EAGER，
+# 与本脚本读的 FN_EAGER 不同名（且旧 wrapper 白名单也没透传它）→ 勾选以前静默失效。
+# 现在认两个键（wrapper 已改为全量透传 FN_*）。
+if [ "${FN_ENFORCE_EAGER:-0}" = "1" ]; then FN_EAGER=1; fi
 if [ "${FN_EAGER:-0}" = "1" ]; then
   ARGS+=(-cc.cudagraph_mode=NONE)
   ARGS+=(--enforce-eager)
@@ -237,6 +245,14 @@ esac
 # store_threshold=2：只存被查过≥2 次的块（write_back 类比，防一次性文档冲刷档位——
 # 参照 ChinaBoy0618/170hx 仓库 v1.0.0 write_through→write_back 的演进经验）。
 # 回滚：FN_KVOFF=0；调容量：FN_KVOFF_BYTES=<字节数>
+# 【1003 路由防呆】SimpleCPUOffloadConnector（FN_SIMPLE_OFFLOAD，百G 二级缓存的正确开关）
+# 只存在于官方 vLLM 0.30.0 新栈（vllm-0300/bin/flash-next-0300-inner.sh 消费）。
+# 本旧 chroot 栈不实现它——以前传入时被静默忽略，造成「设了 100G 却没开」的迷惑
+# （10-03 实锤：envfile FN_SIMPLE_OFFLOAD=100，引擎 cmdline 无任何 offload 参数）。
+# 现在显式报警；要二级缓存请走新栈（rm vllm-0300/DISABLED 后从新栈脚本重启）。
+if [ -n "${FN_SIMPLE_OFFLOAD:-}" ]; then
+  echo "[WARN] 旧 chroot 栈不支持 FN_SIMPLE_OFFLOAD=${FN_SIMPLE_OFFLOAD}（SimpleCPU 二级缓存仅官方 vLLM 0.30.0 新栈实现）；本实例将以【无二级缓存】运行。需要二级缓存：rm /home/ll/deploy/vllm-0300/DISABLED 后经 vllm-0300/start-flash-next-0300.sh 重启。" >&2
+fi
 if [ "${FN_KVOFF:-0}" = "1" ]; then  # 0924 卡死实锤后缺省关（三次 hang 死均紧跟 KVOFF store/load）
   KVOFF_BYTES="${FN_KVOFF_BYTES:-103079215104}"
   # store_threshold 教训（09-24 定案）：=2 对本机「增长型多轮对话」负载是毒药——

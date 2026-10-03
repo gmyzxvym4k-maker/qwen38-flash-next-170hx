@@ -16,11 +16,26 @@
 > FA2 编译 / tilelang cccl 旁路等）。官方 vLLM 0.30.0 栈（下文 §1~§11 与 `stack-0300/`）**保留为回滚路径**，
 > 两套栈的启停与看门狗互斥（同一时刻只跑一套）。
 >
-> ⏪ **2026-10-03 晚（最新）：生产栈按用户指令切回官方 vLLM 0.30.0**（SGLang 实例已停、
+> ⏪ **2026-10-03 晚：生产栈按用户指令切回官方 vLLM 0.30.0**（SGLang 实例已停、
 > `fnx-sglang-watchdog.timer` 已 disable、`fnx-18420-watchdog.timer` 已 enable，闩锁清除）。
 > 启动走 `stack-0300/` 链路（`source vllm-0300/launch.env` → `start-flash-next-0300.sh`，就绪约 4.5 min）。
 > 同轮新增 8889 管理台**「vLLM」标签页**（独立监控页 + 两处运行时归因修复）→ [`console-ui/`](console-ui/README.md)。
 > `stack-sglang/` 保留为回滚路径（其 9 个坑记录仍有效）。
+>
+> 🔁 **2026-10-03 深夜（当前实跑，19:04 起 pid 31064）：18420 又切回 chroot 旧栈**——
+> `vllm-0300/DISABLED` 哨兵在位 = 控制台/看门狗路由到 chroot 脚本对（实跑快照
+> [`tools/live-cmdline-w4a16.txt`](tools/live-cmdline-w4a16.txt)、
+> 哨兵来历注释 [`stack-0300/DISABLED.note`](stack-0300/DISABLED.note)）。三套栈路由优先级：
+> `sglang-18420/ACTIVE` ＞ `vllm-0300/DISABLED`（在位→chroot 旧栈）＞ 默认官方 vLLM 0.30.0 新栈。
+> 同轮两张 CMP 170HX 功耗限定为 **210 W**（[`systemd-units/gpu-power-limit.service.d-pl-console.conf`](systemd-units/gpu-power-limit.service.d-pl-console.conf)）。
+>
+> ✅ **复读（循环输出）问题已解决**：09-19→10-01 四轮采样调档 + 归因，定性为三层因果链
+> （会话上下文污染＝直接触发；1M×xhigh×PLE 数值退化边缘＝土壤；SM74 回收补丁＝历史放大器）。
+> 生产定档（10-03 夜最终） **temperature 0.7 / top_p 0.95 / top_k 20 / min_p 0 /
+> presence_penalty 0 / repetition_penalty 1.15**（0.6 系为过渡档，同族皆可；唯忌 t≤0.3 与裸 1.0/0/1.0），
+> 并确立「采样参数四源同步 + `/proc/<pid>/cmdline` 终验」纪律。
+> **复刻必读**：完整档位演变、五条防复读配置清单、已排除项 →
+> [`docs/08-pitfalls.md` 第九节 P62](docs/08-pitfalls.md)。
 >
 > 本仓库主体（`patches/` 22 补丁组 + `docs/01~09`，本文 §2 起）是上一代 chroot 定制镜像栈的复刻件，
 > 保留为回滚路线，补丁闭环验证最完整（§2 的图景与命令都是旧栈的）。
@@ -29,7 +44,8 @@
 > （逐条带根因说明）**、**内存二级缓存的验收/挤池/soak 工具链与三轮攻关记录**、PLE 表离线 INT8 量化器、
 > 长上下文副本生成器、一键体检脚本，以及 **50+ 条踩坑记录**。
 >
-> 最后同步生产机状态：**2026-09-27 20:20**（当前生产栈真值快照，读自 `/proc/<APIServer>`，非引用）。
+> 最后同步生产机状态：**2026-10-03 18:30**（当前实跑=chroot 旧栈快照 `tools/live-cmdline-w4a16.txt`，
+> 读自 `/proc/<APIServer>`，非引用；新栈真值快照 `stack-0300/tools/live-launch.env` 为回滚参考）。
 
 ---
 
