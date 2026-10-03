@@ -77,6 +77,8 @@ ARGS=(
   --preferred-sampling-params "$GENCFG"
 )
 if [ "$SPEC" = "nextn" ]; then
+  # SG_QSA_SHARE=0 关闭 QSA MTP index sharing（qwen4_exp 架构类默认 True；怀疑=verify 引用错稀疏索引致长输出退化）
+  if [ "${SG_QSA_SHARE:-1}" = "0" ]; then ARGS+=(--json-model-override-args '{"index_share_for_mtp_iteration": false, "text_config": {"index_share_for_mtp_iteration": false}}'); fi
   ARGS+=(--speculative-algorithm NEXTN
          --speculative-draft-model-quantization unquant
          --speculative-num-steps 3

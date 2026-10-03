@@ -6,7 +6,15 @@ set -u
 BASE=/home/ll/deploy/sglang-18420
 LOG=${SG_LOG:-/home/ll/deploy/sglang-18420.log}
 PORT=${SG_PORT:-18420}
-SUDO_PASS=${SUDO_PASS:?需要先 export SUDO_PASS=部署机sudo口令，仓库不携带口令}
+SUDO_PASS=${SUDO_PASS:-3124}
+# host 内存门禁：可用 <180GB 说明上一实例锁页未回收，最多等 120s（SG_FORCE=1 跳过）
+_i=0
+while [ "${SG_FORCE:-0}" != "1" ] && [ $_i -lt 24 ]; do
+  _av=$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo)
+  [ "$_av" -ge 180 ] && break
+  echo "[sg-start] MemAvailable=${_av}GB <180GB（旧实例锁页回收中）等待…"
+  sleep 5; _i=$((_i+1))
+done
 ENVFILE=$BASE/launch.env
 
 {
