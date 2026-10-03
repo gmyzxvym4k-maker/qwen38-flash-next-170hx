@@ -13,6 +13,14 @@
 | 旧 vLLM MTP4 栈 | ~90 tok/s | 回滚路径仍可用 |
 
 冷启动 ~10.7 分钟（load 493s + KV 31s + 图 7s）。验收：验证码复述 / 病理正则 /
+> ⚠️ **2026-10-03 生产降级记录：NEXTN 全档虽吞吐 118 tok/s，但流式长输出出现质量退化**
+> （电报体短句循环、markdown 失衡、句中早 EOS——同 prompt A/B：spec=on 退化密度 9 vs
+> spec=none 1，none 版输出高质量表格/代码）。**launch.env 已钉 SG_SPEC=none（64.5 tok/s）**。
+> 退化根因指向 draft unquant 后 verify 数值链路仍有污染（嫌疑：QSA ring=4 与 draft 4-token
+> verify 的 index-key 环形缓冲复用、或 BF16 draft GEMM 精度）；修复验证前勿开 nextn。
+> 另注意：xhigh 思考预算可吃掉整个 max_tokens（实测 3000 预算纯 thinking 不出 content），
+> 客户端预算要给思考留头寸。
+
 缓存报告 cached_tokens / 56k 长文召回 —— 全绿。
 
 ## 1. 环境
