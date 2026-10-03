@@ -6,7 +6,7 @@ set -u
 BASE=/home/ll/deploy/sglang-18420
 LOG=${SG_LOG:-/home/ll/deploy/sglang-18420.log}
 PORT=${SG_PORT:-18420}
-SUDO_PASS=${SUDO_PASS:-3124}
+SUDO_PASS=${SUDO_PASS:?需要先 export SUDO_PASS（仓库不携带口令）}
 # host 内存门禁：可用 <180GB 说明上一实例锁页未回收，最多等 120s（SG_FORCE=1 跳过）
 _i=0
 while [ "${SG_FORCE:-0}" != "1" ] && [ $_i -lt 24 ]; do
