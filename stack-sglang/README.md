@@ -20,6 +20,17 @@
 > verify 的 index-key 环形缓冲复用、或 BF16 draft GEMM 精度）；修复验证前勿开 nextn。
 > 另注意：xhigh 思考预算可吃掉整个 max_tokens（实测 3000 预算纯 thinking 不出 content），
 > 客户端预算要给思考留头寸。
+> 🧪 **2026-10-03 A/B 实验数据（用户指令恢复 MTP4=sglang NEXTN k4 后复测）**：
+> | 配置 | 定长吞吐 | 电报循环密度 | 开头 |
+> |---|---|---|---|
+> | 26,22 + none | 64.5 tok/s | **1** ✅ | 正常 |
+> | 26,22 + NEXTN(sharing开) | ~113 | 13→167 ❌ | 碎 |
+> | 26,22 + NEXTN(sharing关, `SG_QSA_SHARE=0`) | 100~113 | 10~13 ❌ | 括号失衡 |
+> | 28,20 + NEXTN | 100（分层再平衡无效，串行总和时间不变的常数和分析被证实） | 更差 ❌ | — |
+> 结论：**index sharing 不是元凶**；退化在 NEXTN verify 更深处（QSA ring=4/draft 重建语义），需专项攻坚。
+> 另实锤重启陷阱：**旧实例 PLE 锁页 ~128GB 未回收即拉起新实例 = 主机 OOM（scheduler exit -9）**，
+> start 脚本已加 MemAvailable≥180GB 门禁（patch_start_hostmem_guard.py，--revert 可撤）。
+
 
 缓存报告 cached_tokens / 56k 长文召回 —— 全绿。
 
