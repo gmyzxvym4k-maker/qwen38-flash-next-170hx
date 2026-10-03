@@ -30,6 +30,17 @@
   `resolve*Script` 均返回 `vllm-0300/*`（`ROUTE_OK`）。
 - **附带修复 `STOP_LIST_ONLY` 透传**：停止脚本自提权时 `sudo bash "$0"` 清环境 → 只读探测标志
   丢失、退化成真停实例（排查中误停过一次生产实例）；改为 `VAR=value` 显式透传，复验只读语义生效。
+- **二级缓存按用户选择开启 48 GiB**（同日收尾）：栈路由修好后经控制台同款链路重启，
+  `FN_SIMPLE_OFFLOAD=48` 已钉入 `vllm-0300/launch.env`（重启/看门狗自愈会保持）。
+  引擎侧判据：`SimpleCPUOffloadConnector role=SCHEDULER per_rank=24.00 GB world_size=2`
+  + `Allocating 1078 offload blocks`（rt-patch #13 握手 clamp 1112→1078，防 PP 越界 segfault 生效）；
+  内存 105 → **153 GB**（+48，与预估一致，余 95 GB 供权重页缓存）；推理验证码无损。
+  选 48 而非 96 的理由：本机 PLE 表在 0.30.0 栈恒为 BF16 锁页 95.4 GiB（`FN_PLE_INT8` 在该栈是
+  死变量），96 档会把权重页缓存压到 ~50 GB（需 79 GB），且该机有 MCE 硬挂史。
+  前端口径：`metric_kind=simple`（SimpleCPU 不暴露 `kv_offload_*` 族，只有
+  `external_prefix_cache_*`），卡片显示「48 GiB · 已启用 / SimpleCPU档 · 查 N/中 M」；
+  `hits=0` 属正常（需前缀被挤出 GPU 池后重发才产生回载命中）。
+  真值快照已更新 `stack-0300/tools/live-launch.env`。
 
 ## 2026-09-27 深夜 — rt-patch #11：二级缓存 segfault 根治 + 生产真值快照刷新（v1.1.2）
 
