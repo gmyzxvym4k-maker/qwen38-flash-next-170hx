@@ -15,6 +15,13 @@
 > 9 个必踩坑：权重翻倍泄漏 gc 修复 / NEXTN draft 必须 `--speculative-draft-model-quantization unquant` /
 > FA2 编译 / tilelang cccl 旁路等）。官方 vLLM 0.30.0 栈（下文 §1~§11 与 `stack-0300/`）**保留为回滚路径**，
 > 两套栈的启停与看门狗互斥（同一时刻只跑一套）。
+>
+> ⏪ **2026-10-03 晚（最新）：生产栈按用户指令切回官方 vLLM 0.30.0**（SGLang 实例已停、
+> `fnx-sglang-watchdog.timer` 已 disable、`fnx-18420-watchdog.timer` 已 enable，闩锁清除）。
+> 启动走 `stack-0300/` 链路（`source vllm-0300/launch.env` → `start-flash-next-0300.sh`，就绪约 4.5 min）。
+> 同轮新增 8889 管理台**「vLLM」标签页**（独立监控页 + 两处运行时归因修复）→ [`console-ui/`](console-ui/README.md)。
+> `stack-sglang/` 保留为回滚路径（其 9 个坑记录仍有效）。
+>
 > 本仓库主体（`patches/` 22 补丁组 + `docs/01~09`，本文 §2 起）是上一代 chroot 定制镜像栈的复刻件，
 > 保留为回滚路线，补丁闭环验证最完整（§2 的图景与命令都是旧栈的）。
 >

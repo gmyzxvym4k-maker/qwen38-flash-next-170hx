@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-10-03 — 8889 管理台新增「vLLM」标签页 + 两处运行时归因修复；生产栈切回 vLLM 0.30.0
+
+- **生产栈切换（用户指令）**：18420 由 SGLang 0.5.21 切回官方 vLLM 0.30.0 栈。
+  SGLang SIGTERM 优雅退出（7 s、显存 10 s 归零）→ `source vllm-0300/launch.env` →
+  `start-flash-next-0300.sh`，**就绪 4.5 min**；health 200、验证码精准复述、MTP 接受率 39.5%、Xid 0。
+  托管切换：`fnx-sglang-watchdog.timer` disabled、`fnx-18420-watchdog.timer` enabled、`fnx-manual-stop` 清除。
+- **SGLang 启动失败根因（同时修掉，留档）**：`sglang-inner.sh:20-21` 的 `${SG_GENCFG:-{json}}` /
+  `${SG_CT_KWARGS:-{json}}` 写法——bash 在 default 第一个未转义 `}` 处终止展开，**变量有值时尾部多余
+  `}` 被字面附加** → `argparse invalid loads value: '…"xhigh"}}'` → 秒退 → 看门狗每 60 s 重拉、
+  连续失败 4 h。修法：`VAR="${SG_X:-}"; [ -n "$VAR" ] || VAR='{json}'`（= 本项目 docs/08 **P20** 早已记录的坑）。
+- **新增 8889「vLLM」标签页**（形态复刻同日 SGLang 页）→ [`console-ui/`](console-ui/README.md)：
+  独立页 `vllm.html`（MTP 逐位接受率 / KV 池与 block 配置取自 `cache_config_info` 标签 /
+  前缀缓存 / CPU KV 二级缓存 / 延迟分位 / 累计吞吐按来源拆分），＋两处归因修复补丁 ＋渲染实测脚本
+  （DOM stub + 真实端点数据，**17/17 PASS**）。
+- **归因修复①**：`findVllmPidByPort` / model-manager 实例发现补 `listVllmInstances()` 兜底——
+  root 启动让 `lsof` 看不见监听端口，旧兜底 `pgrep -f "[v]llm.entrypoints"` 又匹配不到
+  0.30.0 实跑的 `vllm serve` CLI 形式 → 实例 `runtime=unknown / gpu=null / pid=null`。
+  修后：`runtime='vllm' gpu='0' gpus=[0,1] pid=<非空>`。
+- **归因修复②**：`/v1/internal/stats` 的 vLLM 主/从实例对象补 `runtime: 'vllm'`
+  （SGLang 侧两处都有、vLLM 侧两处都漏；前端运行时徽标与二级缓存口径分支依赖该字段）。
+- 配套：补丁幂等（锚点缺失明确报错退出）、server.js 语法门禁、`PAGE_VERSION` r7 → r8。
+
 ## 2026-09-27 深夜 — rt-patch #11：二级缓存 segfault 根治 + 生产真值快照刷新（v1.1.2）
 
 - **P59 误诊更正（P60 入档）**：当日三次间歇 segfault（17:38 / 20:38 / 21:51）的"attrIdxs 单标量
