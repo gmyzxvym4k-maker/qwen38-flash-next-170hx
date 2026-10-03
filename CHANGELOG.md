@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-10-03 深夜 — ★复读问题解决定版 + 生产切回 chroot 旧栈 + 功耗墙 210 W
+
+- **【主题：复读（循环输出）问题已解决】** 完整攻关归档 → `docs/08-pitfalls.md` 新增第九节 **P62**：
+  - 三层因果链定案：①直接触发=会话上下文污染（病理串进历史后无可救药，新会话是唯一出路；
+    「新会话是否循环」=第一判别题）；②土壤=1M 上下文 × xhigh 思考 × PLE n-gram 参与 logits 的
+    数值退化边缘（temp0 下 fresh/prefix-cache 两条路径续写即句级漂移——字节级等价不可作定罪判据）；
+    ③历史放大器=SM74 回收补丁窗口（09-29~30 病发期与其冷启动窗口重合，10-01 已回滚 SM70，
+    rmmod 不清粘滞 live-override 寄存器、必须冷重启）。
+  - **生产定档采样（10-03 夜最终）= `t0.7 / top_p0.95 / top_k20 / min_p0 / presence0 / rep1.15`**
+    （演变：t1.0→t0.3（治接受率、引发 P14 复读）→09-21 定 0.6 组合→09-27 回裸档→
+    09-29 uct/duct token 级硬循环复发→用户拍板回 0.6 组合→10-01 观察期 0.2/1.15→
+    10-03 夜旧栈上定档 0.7/0/1.15=当前生产）。
+  - **防复读复刻五条清单**（P62 内详述）：采样档写进两套 inner 的 `GENCFG_DEFAULT`（本仓库
+    `scripts/flash-next-w4a16-inner.sh` 已同步为 t0.6/pres0.2/rep1.15 现役档）；病理串绝不回流；
+    不用 SM74 补丁；MTP 档保持 block1616 合法的 K≤4；采样参数四源同步 + 读
+    `/proc/<APIServer>/cmdline` 终验（历史上多次「文件都对、运行时另一个值」=envfile 残留+竞写）。
+  - 监控件：机器侧 `loop-sentinel.py`（病理正则 `uct|duct` + 污染探针）。
+- **生产栈路由现状（如实记录）**：18420 实跑=**chroot 旧栈 vLLM v0.1.dev20073**
+  （17:27:47 起，PP2+MTP4+block1616+1M YaRN+OffloadingConnector 96 GiB 经典连接器；
+  `vllm-0300/DISABLED` 哨兵在位，控制台/看门狗随之路由旧栈）。三套栈路由优先级：
+  `sglang-18420/ACTIVE` ＞ `vllm-0300/DISABLED` ＞ 默认新栈。实跑真值快照入仓
+  `tools/live-cmdline-w4a16.txt` / `live-env-w4a16.txt` / `launch.env.w4a16-current`。
+  定档演进（10-03 夜最终态）：实跑与服务端定档统一为 **t0.7 / top_p0.95 / top_k20 / min_p0 /
+  presence0 / rep1.15**（旧 chroot 栈上验证的稳定反循环档），快启预设固化为
+  `current-norepeat-1m-mtp4-kvoff96-oldstack`（名称含「不复读」；旧的 t0.3 档降级为
+  legacy 条目）。注意 09-29 记忆里的 0.6/0.1/1.05 组合已被该档接替——P62 表格里两档都有效，
+  当前生产用 0.7/0/1.15。
+- **功耗墙 210 W 定版**：双卡 `power.limit=210W`、persistence=Enabled、开机自动重放。
+  生效链与陷阱（systemd drop-in 覆盖脚本缺省值）见新增件
+  `systemd-units/gpu-power-limit.service.d-pl-console.conf`。沿革 200→250→210→300→250→210。
+- **脚本现行版同步（md5 对账机器）**：`scripts/flash-next-w4a16-inner.sh`（9bbc814f…，含
+  PLE_INT8_DIR 可覆盖、FN_ENFORCE_EAGER 键名修复、SimpleCPU 旧栈防呆 WARN、采样缺省
+  t0.6/pres0.2/rep1.15）、`start-/stop-flash-next-w4a16.sh`（全量透传 FN_* 动态扫 +
+  manual-stop 闩锁，脱敏为 SUDO()/NOPASSWD 框架）；`stack-0300/quickstart-presets.json`
+  同步机器现行版（flashnext=current-1m-mtp4-simplecpu100，uncensored=unc-1m-mtp4-xhigh）。
+- 诚实声明：实跑与定档之间的上述漂移**未被本仓库擅自修改**——机器现态以 `tools/live-*`
+  快照为准，目标态以 P62 清单为准，处置（是否回调采样、是否清旧栈连接器）由部署者拍板。
+
 ## 2026-10-03 — 8889 管理台新增「vLLM」标签页 + 两处运行时归因修复；生产栈切回 vLLM 0.30.0
 
 - **生产栈切换（用户指令）**：18420 由 SGLang 0.5.21 切回官方 vLLM 0.30.0 栈。

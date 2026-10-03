@@ -1,0 +1,7 @@
+[dsh-route-note-1003] 此哨兵在位 => 8889 控制台与 fnx-18420-watchdog 的路由均选【旧 chroot 脚本对】。
+# 10-03 16:44 由栈切换操作放置（当时 18420 已以旧 chroot 栈手动拉起）。
+# 注意：旧 chroot 栈 inner 不消费 FN_SIMPLE_OFFLOAD（SimpleCPU 百G 二级缓存仅官方 0.30.0 新栈有接线，
+#   见 vllm-0300/bin/flash-next-0300-inner.sh:304-313）——哨兵在位期间，无论弹窗/envfile 怎么写
+#   FN_SIMPLE_OFFLOAD，二级缓存都不会进引擎命令行（10-03 实锤：envfile=100，cmdline 无 --kv-offloading-size）。
+# 要开二级缓存 => rm 本文件（同时确保不在用 sglang 栈：sglang-18420/ACTIVE 不在了），再从控制台/新栈脚本重启 18420。
+# 详见 kvoff-diag-1003/DIAGNOSIS.md（由 Mac 侧会话写入远端时同步）

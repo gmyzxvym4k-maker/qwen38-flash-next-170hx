@@ -89,7 +89,7 @@ python3 -m py_compile：apply-patches / bench-fnx / make-longctx-copy / quantize
 ```
 grep -rniE "<旧sudo密码>|192\.168\.[0-9]+\.[0-9]+|password\s*[:=]"  →  无命中
 ```
-（唯一命中是 `MANIFEST.tsv` 里某个 sha256 恰好含子串 `3124`，属误报。）
+（唯一命中是 `MANIFEST.tsv` 里某个 sha256 恰好含口令子串，属误报。）
 所有脚本的 sudo 凭据改为 `SUDO_PASS` 环境变量或 NOPASSWD sudoers；主机地址写作 `<DEPLOY_HOST>`。
 
 ## V7 · 在线功能验收
@@ -101,11 +101,21 @@ $ python3 scripts/smoke-online.py
 [3 长上下文] 10.4s prompt=80684 cached=0 finish=stop reasoning=91 标识命中=True 输出='  zz-1790166214'
 [4 流式] chunks=12 TTFT=1.13s
 [5 标点自检] 0.9s 异常标点组合=0 输出='\n\n今天天气很好，我们去爬山；山上有风，也有云。'
+[6 复读探针] …s finish=stop 病理指纹=False 最差8字窗重复=2   # 形态示意，数值以复跑为准
 
 ✓ 在线功能验收全部通过
 ```
-✅ 5/5。要点：80,684 token 长上下文里的**随机标识被正确复述**（说明 PLE 表与 RoPE 缩放都没坏）；
+✅ 6/6。要点：80,684 token 长上下文里的**随机标识被正确复述**（说明 PLE 表与 RoPE 缩放都没坏）；
 标点探针 0 异常（这是 `P13` 那类表错位最灵敏的早期信号）。
+
+**用例 6 = 复读探针（`docs/08` P62 的自动化门禁，2026-10-03 生产实跑标定）**：不传 sampling 参数
+让模型连续生成 1500 token，把 `content + reasoning` 合并后查两条硬判据——①病理指纹正则
+`(uct|duct){2,}` / 连环标点（思考模型判复读**必须合并 reasoning**，只查 content 会假阴性）；
+②同一 10 字滑窗最大重复 <10。标定依据：健康 xhigh 思考输出最差窗=3，思考预算耗尽
+（finish=length）的健康输出最差窗=7，真句子复读远超 10——**阈值勿收回 3，否则把正常长思考
+误判成复读**；`finish=length` 时脚本会打软提示（非病灶）。
+复跑失败时按 P62 三分支定位：新会话能否复现（会话污染 vs 引擎）→ 采样真值
+（`tr '\0' '\n' < /proc/<APIServer pid>/cmdline | grep -A1 override-generation-config`）→ SM74 是否在位。
 
 > **两点如实说明**：
 > 1. 用例 3 第一次跑出 `content=''` —— 不是服务故障，是 `max_tokens=96` 全被思考吃掉了。
