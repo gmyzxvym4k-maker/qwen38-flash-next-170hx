@@ -21,6 +21,15 @@
 - **归因修复②**：`/v1/internal/stats` 的 vLLM 主/从实例对象补 `runtime: 'vllm'`
   （SGLang 侧两处都有、vLLM 侧两处都漏；前端运行时徽标与二级缓存口径分支依赖该字段）。
 - 配套：补丁幂等（锚点缺失明确报错退出）、server.js 语法门禁、`PAGE_VERSION` r7 → r8。
+- **栈路由哨兵修复（同日追加，用户报「二级缓存·CPU 功能没法使用」）**：`server.js` 的
+  `resolveStartScript`/`resolveStopScript` **SGLang 优先级高于 0.30.0**，判据是
+  `sglang-18420/ACTIVE` 哨兵；该哨兵 07:31 启用 SGLang 时创建、回切 vLLM 时无人清（全仓无脚本
+  维护它）→ 控制台「启动」拉 SGLang、「停止」调 SGLang 脚本（`WARN: 仍有残留 pid=…`），
+  vLLM 专属的 CPU KV 二级缓存因此不可达。修法：①清孤儿哨兵；②根治=两栈启动脚本互斥配对
+  （vLLM 启动清哨兵 / SGLang 启动置哨兵）。验证：提 server.js 真实函数在沙箱执行，
+  `resolve*Script` 均返回 `vllm-0300/*`（`ROUTE_OK`）。
+- **附带修复 `STOP_LIST_ONLY` 透传**：停止脚本自提权时 `sudo bash "$0"` 清环境 → 只读探测标志
+  丢失、退化成真停实例（排查中误停过一次生产实例）；改为 `VAR=value` 显式透传，复验只读语义生效。
 
 ## 2026-09-27 深夜 — rt-patch #11：二级缓存 segfault 根治 + 生产真值快照刷新（v1.1.2）
 

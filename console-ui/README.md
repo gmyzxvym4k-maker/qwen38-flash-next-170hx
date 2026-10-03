@@ -106,3 +106,46 @@ vllm」），而 vLLM 主实例与从实例对象都漏了该字段 → 前端 `
 - 页面按 `runtime === 'vllm'` 筛实例；归因失败（unknown）的实例不进统计，页面会显式弹黄条提示端口。
 - 首帧 Decode/Prefill 吞吐显示「空闲」属正常：两者是 counter 差值，需第二帧（2s 后）才有值。
 - `/metrics` 非 200（未启 `--enable-metrics`）时页面显示明确的红色诊断卡，而不是空数据。
+
+## 8. 栈路由哨兵修复（2026-10-03，控制台启动/停止被 SGLang 劫持）
+
+**症状**（用户报「二级缓存·CPU 功能没法使用」）
+
+- 控制台点「启动」→ 拉起的是 **SGLang**；点「停止」→ 调 SGLang 停止脚本、杀不到 vLLM，
+  日志报 `[quickstart-script] stop … (WARN: 仍有残留 pid=…)`。
+- 连带：vLLM 专属的「二级缓存（CPU KV offload）」在控制台里用不了 —— SGLang 没有该机制，
+  且启动路径根本走不到 vLLM inner。
+
+**根因**：`server.js` 的栈路由按哨兵文件判定，且 **SGLang 优先级高于 0.30.0**：
+
+```js
+681  if (sm.stopScriptSglang && sglangActive() && …) return sm.stopScriptSglang;
+685  if (sm.scriptSglang      && sglangActive() && …) return sm.scriptSglang;
+//   sglangActive() = fs.existsSync('/home/ll/deploy/sglang-18420/ACTIVE')
+```
+
+该哨兵由 10-03 07:31 启用 SGLang 时创建，**回切 vLLM 时无人清理**（全仓库无任何脚本写/删它，
+server.js 也只读）→ 路由恒指向 SGLang。
+
+**修法**（`fix-stack-route-sentinel-1003.py`）
+
+1. 清掉孤儿哨兵 → 路由立即回到 vLLM 0.30.0（`sglangActive()` 每次实时读文件，无需重启控制台）。
+2. 根治：哨兵随**实际启动的栈**自动同步 —— `vllm-0300/start-flash-next-0300.sh` 启动时清哨兵，
+   `sglang-18420/start-flash-next-sglang.sh` 启动时置哨兵（互斥配对，今后切换不再留孤儿状态）。
+
+**验证**（`verify-stack-route.js`：提取 server.js 真实函数在隔离沙箱执行）
+
+```
+哨兵实测: SGLang ACTIVE=false  0.30.0 DISABLED=false
+sglangActive()=false  stack0300Active()=true
+resolveStartScript -> /home/ll/deploy/vllm-0300/start-flash-next-0300.sh
+resolveStopScript  -> /home/ll/deploy/vllm-0300/stop-flash-next-0300.sh
+ROUTE_OK：控制台启动/停止均指向官方 vLLM 0.30.0 栈
+```
+
+**附带修复：`STOP_LIST_ONLY` 透传**（`fix-stop-list-only-1003.py`）
+
+`stop-flash-next-0300.sh` 自提权时用 `sudo -S -p '' bash "$0" "$PORT"` 重跑自己，sudo 默认清环境
+→ 调用方设的 `STOP_LIST_ONLY=1`（只列目标、不动手）**丢失**，只读探测退化成"真停实例"
+（本次排查中已因此误停过一次生产实例）。修法：提权时以 `VAR=value` 形式显式透传。
+复验：`STOP_LIST_ONLY=1 bash stop-flash-next-0300.sh 18420` 现在只打印目标列表、实例照常运行。

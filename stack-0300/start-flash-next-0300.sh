@@ -11,6 +11,11 @@ set -u
 BASE=/home/ll/deploy/vllm-0300
 # 启动 = 操作者声明实例应在运行：清除人工停止闩锁，恢复看门狗托管（09-26）
 rm -f /home/ll/deploy/fnx-manual-stop
+# [stack-route-fix-1003] 清 SGLang 栈哨兵：控制台 resolveStart/StopScript 以
+# sglang-18420/ACTIVE 是否存在判定栈路由，且 SGLang 优先级高于 0.30.0；该哨兵残留时
+# 控制台启动/停止会双双路由到 SGLang（症状：停止报「仍有残留」、启动拉起 SGLang、
+# vLLM 专属的 CPU KV 二级缓存"没法用"）。两栈互斥：本脚本启动即声明栈归属。
+rm -f /home/ll/deploy/sglang-18420/ACTIVE
 PORT=${FN_PORT:-18420}
 LOG=${FN_LOG:-/home/ll/deploy/vllm-flash-next-0300.log}
 ENVFILE=${FN_ENVFILE:-$BASE/launch.env}
