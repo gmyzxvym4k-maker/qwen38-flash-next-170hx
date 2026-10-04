@@ -433,6 +433,23 @@
 
 **监控工具**：机器上有 `loop-sentinel.py`（定时探针 + 病理正则 `uct|duct` + 污染探测，P1-P4 四类检查）；判据日志 `/home/ll/deploy/loop-sentinel.log`。
 
+### P63 服务机换板后数据盘读速塌方（28~45 MB/s）+ mmap 随机查表的预读放大——"输出/预填充没有旧平台快"的双重根因（2026-10-05）
+
+**症状**：Qwen3.8-Flash-Next-Channel-INT8-w8a8（3×170HX PP3）decode 只有 13~25 tok/s（旧 x99 平台 ~90），实例每隔 20~40 分钟卡死→`TimeoutError: RPC call to sample_tokens timed out`→EngineDead→看门狗重启循环。
+
+**排查链（每步都有实测数）**：
+1. PLE INT8 表 48.3 GiB 在 32 GiB 内存机上 fincore 只驻留 30%（14.6/47.7 GiB）→ 服务期每个 token 的 n-gram 随机查表都在缺页读盘。
+2. 全局 `read_ahead_kb=128`（权重加载最优值）对 PLE 映射是灾难：每 160 B 行缺页投机读 128 KB（**约 800× 读放大**），页缓存被冲刷、盘被喂爆。内核在 open/mmap 时刻把 `bdi->ra_pages` 快照进 `file->f_ra`，事后改 sysfs 无效（P29 同型机制）。
+3. 盘本身也在退化：同一块 JZ-SSD2T-XW（serial 30166625132，累计读 166 TB、不安全关机 791 次）换到新主板 H12D-8D 后 **O_DIRECT 单流 512 MB 全偏移恒 28~40 MB/s**（同机对照三星 PM981 = 2669 MB/s；SMART 温度 45 ℃、Media Errors=0、Spare 100%）——盘没有"坏块"，是 DRAM-less QLC 主控在读重试/GC 风暴里的整体性塌方。**任何"这台机盘没问题，因为 SMART 干净"的判断都不可信，判据只能是有负载直读测速**。
+
+**修复（两件，都要做）**：
+1. `tools/patch-ple-fadvise-1005.py`：给 `v1/ple_offload/worker.py` 三个 PLE mmap fd（BF16 磁盘驻留路径 + INT8 表/scale）加 `posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM)`——`f_ra.ra_pages=0` 随 fd 生效，缺页只读所需页；权重文件不受影响。改完必删 `__pycache__` 下对应 .pyc。
+2. **把 PLE 表迁到健康的盘**：`/home/ll/ple-w8a8`（系统盘，49 GB，复制后多窗口 dd+md5 界内校验；注意校验偏移必须落在文件大小内，越界窗口 dd 读 0 字节会"假 OK"）。同时把 inner 缺省 `PLE_INT8_DIR` 与 launch.env 的 `FN_PLE_INT8_DIR` 一起钉到该目录（控制台/看门狗/手动三条启动链路都要覆盖，见 8889 弹窗字段五层铁律）。
+
+**残余事实（如实）**：32 GiB 内存装不下 48.3 GiB 表 → 服务期永远有 cold miss，根治需 ≥96 GiB RAM（该板 8 槽、旧平台留有 7×32 GB DDR4 ECC RDIMM 可直接搬）+ 更换数据盘（权重冷启动加载现在也要 ~40 分钟，因为盘只有 ~40 MB/s）。INT8+heap（匿名 48.3 GiB）在此机结构性不可行。
+
+**判据**：修复后 decode 采样 `disk_read_mbs≈0~50` 而 `gpu0_util` 不再周期性掉 0；日志 `[FN-PLE-INT8] n-gram table attached from /home/ll/ple-w8a8`。
+
 ---
 
 ## 附：已验证走不通的死路（别再试）
