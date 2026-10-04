@@ -433,6 +433,15 @@
 
 **监控工具**：机器上有 `loop-sentinel.py`（定时探针 + 病理正则 `uct|duct` + 污染探测，P1-P4 四类检查）；判据日志 `/home/ll/deploy/loop-sentinel.log`。
 
+### P63b 盘读速塌方的标准处置顺序（2026-10-05 二次发作后定版，先于 P63 修复细则执行）
+
+1. **抢救不可重下载件**（只有这些值得从 50 MB/s 的故障盘里抠）：`vllm-image/`（chroot 镜像 rootfs，本机连不上 dockerhub 无法 docker pull）、小配置目录（如 `models-1m/` 的 YaRN config）。其余模型权重、PLE 表产物一律**擦后重下**——ModelScope 4 路并发 ~100 MB/s，比从故障盘抠还快 2~4 倍且拿到的是干净数据。抢救打包命令：`sudo tar cf /home/ll/rescue-1005/vllm-image.tar -C /media/ll/data vllm-image`（tar 前先 umount rootfs 上的 bind 挂载避免递归）。
+2. **可选一枪 `nvme format --ses=0`**（不擦数据重格式化）：规范上不动用户数据，赌控制器状态机复位。**实际成功率低**（多数控制器 ses=0 近似空操作，09-25 的修复机制是 block erase 重建 FTL 空闲表），且白牌固件行为不可保证（可能等同全清）——只把它当免费彩票，中奖预期不要高于两三成。打完立刻测读速。
+3. **主力方案 `nvme format --lbaf=0 --ses=1`（用户数据擦除）**：约 4 秒完成，本次实测读速恢复 **4.7 GB/s + 7.4 万 IOPS**（比 09-25 的 1.4 GB/s 还好——本机槽位 Gen4）。擦后必须先过测速关再 mkfs：`dd if=/dev/disk/by-id/... of=/dev/null bs=1M count=2048 iflag=direct`。
+4. **ses=1 也救不回 = 盘报废**，换盘。
+5. 擦后重建：`mkfs.ext4 -F -L data2t -m 1 /dev/disk/by-id/nvme-...`（整盘无分区）→ fstab 改 UUID → mount → `nvme format` 后 **dockerd 的 data-root 在数据盘上，要先 systemctl stop docker.socket docker 才能 umount**。
+6. 长期教训：该盘 30 天内两次读塌方（09-25、10-05），791 次不安全关机 + 166 TB 累计读是主因。**该机 UPS/正常关机纪律要做**（看门狗/实例 SIGTERM 正常流程都算安全关机；整机断电硬挂才是杀手），并把"盘健康只信实测读速，不信 SMART"写进巡检。
+
 ### P63 服务机换板后数据盘读速塌方（28~45 MB/s）+ mmap 随机查表的预读放大——"输出/预填充没有旧平台快"的双重根因（2026-10-05）
 
 **症状**：Qwen3.8-Flash-Next-Channel-INT8-w8a8（3×170HX PP3）decode 只有 13~25 tok/s（旧 x99 平台 ~90），实例每隔 20~40 分钟卡死→`TimeoutError: RPC call to sample_tokens timed out`→EngineDead→看门狗重启循环。
