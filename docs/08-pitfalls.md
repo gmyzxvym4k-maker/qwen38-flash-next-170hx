@@ -444,7 +444,7 @@
 
 **修复（两件，都要做）**：
 1. `tools/patch-ple-fadvise-1005.py`：给 `v1/ple_offload/worker.py` 三个 PLE mmap fd（BF16 磁盘驻留路径 + INT8 表/scale）加 `posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM)`——`f_ra.ra_pages=0` 随 fd 生效，缺页只读所需页；权重文件不受影响。改完必删 `__pycache__` 下对应 .pyc。
-2. **把 PLE 表迁到健康的盘**：`/home/ll/ple-w8a8`（系统盘，49 GB，复制后多窗口 dd+md5 界内校验；注意校验偏移必须落在文件大小内，越界窗口 dd 读 0 字节会"假 OK"）。同时把 inner 缺省 `PLE_INT8_DIR` 与 launch.env 的 `FN_PLE_INT8_DIR` 一起钉到该目录（控制台/看门狗/手动三条启动链路都要覆盖，见 8889 弹窗字段五层铁律）。
+2. **把 PLE 表迁到健康的盘**：最终落在 `/home/ll/deploy/ple-w8a8`（系统盘三星 PM981，49 GB，复制后多窗口 dd+md5 界内校验；注意校验偏移必须落在文件大小内，越界窗口 dd 读 0 字节会"假 OK"）。**坑中坑：chroot 只 bind 了 `/media/ll/data` 与 `/home/ll/deploy` 两个宿主目录，PLE 目录必须放其中之一**——第一次放 `/home/ll/ple-w8a8` 时 chroot 内 `[ -f meta ]` 判空，静默回落 BF16 分片加载路径（多花 40 分钟才暴露）。同时把 inner 缺省 `PLE_INT8_DIR` 与 launch.env 的 `FN_PLE_INT8_DIR` 一起钉到该目录（控制台/看门狗/手动三条启动链路都要覆盖）。
 
 **残余事实（如实）**：32 GiB 内存装不下 48.3 GiB 表 → 服务期永远有 cold miss，根治需 ≥96 GiB RAM（该板 8 槽、旧平台留有 7×32 GB DDR4 ECC RDIMM 可直接搬）+ 更换数据盘（权重冷启动加载现在也要 ~40 分钟，因为盘只有 ~40 MB/s）。INT8+heap（匿名 48.3 GiB）在此机结构性不可行。
 
