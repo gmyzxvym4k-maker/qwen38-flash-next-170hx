@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-05 上午 — ★126 机（32GB 内存）启动页 heap 参数 OOM 循环定版 + 双层钳位闸
+
+- **【故障签名】** 管理页启动 18420 → 引擎在加载期死：日志 `RuntimeError: PLE offload worker exited during startup` + `Engine core initialization failed`；`dmesg` 连续 `oom-kill`（被杀进程 anon-rss ~24GiB 持续增长中）。08:58/09:01/09:04/09:2x/09:2x 五连，看门狗每 3 分钟按旧 envfile 原样重拉 → 无限循环。
+- **【根因链】** ①`index.html` 弹窗脚本模型覆盖块把 `pleLoc` 写死 `'heap'`、二级缓存缺省写死 `simple 96GiB`（09-23 大内存机时代的"生产现状"）；②`server.js scriptModelDefaults()` 未把 10-05 换装定版进 `SCRIPT_MODELS.base` 的 `pleLoc:'disk'/pleInt8:'1'/kvoff:'0'` 透传给前端；③浏览器里补丁前加载的旧页面缓存仍提交 heap；④`launch.env` 由失败启动落盘为 heap，看门狗忠实重放。本机（华勤 H12D-8D，32GB 内存）INT8 heap=48.3GiB 匿名堆不可回收 → PleOffloadWorker 必被 OOM 杀。
+- **【修复（三层，均可幂等重放）】**
+  1. `tools/patch-pagefix-1005.py`：`scriptModelDefaults()` 透传 `pleInt8/pleLoc/kvoff/kvoffGiB`（base 未声明回落安全档）；前端 smd 块三行改为跟随 `smd.*`（单一真源=SCRIPT_MODELS.base）。
+  2. `tools/patch-pleclamp-1005.py`：低内存双闸——plan 层 `heap && os.totalmem()<100GiB → 强制 disk + 页面警告`；inner 层同判据 `[FN-PLE-CLAMP]`（覆盖手动命令/看门狗/旧 envfile 路径）。本包 `scripts/flash-next-w4a16-inner.sh` 已含钳位段。
+  3. `flash-next-w4a16-launch.env` 的 `FN_PLE_LOC` 同步为 `disk`（备份 `.bak-pleclamp-1005`）。
+- **【验证】** 看门狗 09:34 拉起 → 09:37:18 health=200；判据行 `[FN-PLE-INT8] n-gram table attached ... (mmap, zero heap)`；KV 池 1,129,450 tok（262144 档 + gpu-mem 0.97）；chat 冒烟正常；此后零新 oom-kill、Xid=0；内存 used 11Gi + 可回收 18Gi。plan 钳位离线证据：node vm 执行 `scriptModelLaunchPlan` 以 `pleLoc:'heap'` 提交 → 返回 `env.FN_PLE_LOC='disk'` + 中文警告。
+- **【运维判据】** 32GB 机三档红线：INT8 heap / BF16 heap / 大 GiB 二级缓存 全部不可用；唯一可行=INT8+disk+kvoff=0。补内存 ≥96GB 后 heap 档才重新有意义（钳位阈值 <100GiB 自动放行，无需回退补丁）。
 ## 2026-10-03 深夜 — ★复读问题解决定版 + 生产切回 chroot 旧栈 + 功耗墙 210 W
 
 - **【主题：复读（循环输出）问题已解决】** 完整攻关归档 → `docs/08-pitfalls.md` 新增第九节 **P62**：
