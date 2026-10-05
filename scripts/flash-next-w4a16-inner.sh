@@ -46,9 +46,19 @@ export VLLM_PLE_CPU_OFFLOAD=1
 #   INT8=1 视作 disk。回滚手动命令 FN_PLE_INT8=0 语义不变。
 FN_PLE_INT8="${FN_PLE_INT8:-1}"
 # [FN-PLE-DIR] INT8 产物目录可被 FN_PLE_INT8_DIR 覆盖（不同 checkpoint 的 n-gram 表内容不同，禁止跨模型复用）
-PLE_INT8_DIR="${FN_PLE_INT8_DIR:-/media/ll/data/ple}"
+PLE_INT8_DIR="${FN_PLE_INT8_DIR:-/home/ll/deploy/ple-w8a8}"  # [1005] 本机 JZ 数据盘已退化(40MB/s)，w8a8 表迁至健康的三星系统盘
 if [ -z "${FN_PLE_LOC:-}" ]; then
   if [ "$FN_PLE_INT8" = "0" ]; then FN_PLE_LOC=heap; else FN_PLE_LOC=disk; fi
+fi
+# [pleclamp-1005] 低内存机防线（与 server.js plan 同判据的第二道兜底）：
+# heap 匿名堆 48.3GiB(INT8)/95.4GiB(BF16) 不可回收，MemTotal <100GiB 必触发 oom-killer
+# （10-05 该机四连 OOM→PLE worker exited→EngineDead→看门狗循环）。强制降级 disk。
+if [ "$FN_PLE_LOC" = "heap" ]; then
+  MEM_KIB=$(awk '/MemTotal/{print $2}' /proc/meminfo)
+  if [ "${MEM_KIB:-0}" -lt $((100 * 1024 * 1024)) ]; then
+    echo "[FN-PLE-CLAMP] MemTotal=$((MEM_KIB / 1048576))GiB <100GiB：heap 会被 OOM 杀 -> 强制降级 disk（可回收页缓存）" >&2
+    FN_PLE_LOC=disk
+  fi
 fi
 # 精度定精度、位置定内存/硬盘，两者正交（四种组合都成立）：
 #   INT8+内存 = VLLM_PLE_INT8_MEMORY 匿名堆 48.3GiB（[FN-PLE-INT8MEM] 引擎侧新增）
@@ -112,7 +122,7 @@ export VLLM_SKIP_MM_WARMUP=1
 export VLLM_CACHE_ROOT="${FN_CACHE_ROOT:-/root/.cache/vllm-flash-next-w4a16}"
 mkdir -p "$VLLM_CACHE_ROOT" 2>/dev/null || true
 
-# 无 P2P（CNS）：NCCL 走 host SHM
+# 无 P2P（CNS）：NCCL 走 host SHM。10-05 换装 EPYC+原生内核后依旧无 P2P 底子（无 p2pdma 定制核），保持禁用
 # 0919 P2P 实验：平台已换 X99-T8，topo -p2p r=OK，实测跨卡 copy 5.27GB/s，启用 P2P（回滚=恢复 .bak-p2p-0919）
 # export NCCL_P2P_DISABLE=1
 export NCCL_SHM_DISABLE=0
