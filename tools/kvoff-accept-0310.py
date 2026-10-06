@@ -24,7 +24,9 @@ MODEL = os.environ.get("PROBE_MODEL", "qwen3.8-flash-next")
 CHUNK = int(os.environ.get("CHUNK_TOKENS", "100000"))      # 挤池每发填充的 token 量级
 CHURN_TARGET = int(os.environ.get("CHURN_TARGET", "1400000"))  # 挤池总量（> GPU 池 121 万）
 DOC_TARGET = int(os.environ.get("DOC_TARGET", "40000"))
-SUDO_PASS = os.environ.get("SUDO_PASS", "")   # [脱敏] 本机跑时 export SUDO_PASS=<口令>，否则 Xid 计数记 "?"
+ANSWER_MAX = int(os.environ.get("ANSWER_MAX_TOKENS", "900"))  # ⚠ 别用 64：思考模型会把预算吃满、content 为空 → 假阴性（09-27 与 10-06 两轮都栽过）
+# 本副本已脱敏：Xid 计数需要 sudo，跑前 export SUDO_PASS=<部署机 sudo 口令>；不设则该项记 "?"
+SUDO_PASS = os.environ.get("SUDO_PASS", "")
 RES = os.environ.get("PROBE_RES", "/home/ll/deploy/kvoff-accept-0310.result")
 CHATKW = {"enable_thinking": True, "preserve_thinking": True, "reasoning_effort": "medium"}
 
@@ -116,19 +118,24 @@ def main():
     # 重发同一文档（前缀必须与建档逐字一致：同 CHATKW、同 doc 文本）
     log("[3] 重发建档文档，问验证码")
     t0 = time.time()
-    d3, el3 = req([{"role": "user", "content": doc + "\n\n这份文档里出现的验证码是什么？只输出验证码本身。"}],
-                  max_tokens=64)
+    d3, el3 = req([{"role": "user", "content": doc + "\n\n这份文档里出现的验证码是什么？请只输出验证码本身，不要解释。"}],
+                  max_tokens=ANSWER_MAX)
     det3 = (d3.get("usage") or {}).get("prompt_tokens_details") or {}
     cached = det3.get("cached_tokens") or 0
     msg = d3["choices"][0]["message"]
-    txt = (msg.get("content") or "") + (msg.get("reasoning_content") or "")
+    content = msg.get("content") or ""
+    reasoning = msg.get("reasoning_content") or ""
+    txt = content + reasoning          # 思考模型：验证码可能在 reasoning 里，判据必须合并两路
     ext1 = metrics("vllm:external_prefix_cache_hits_total")
     extq1 = metrics("vllm:external_prefix_cache_queries_total")
     hit = code in txt
     log("    prompt=%d cached=%d（%.1f%%）external_hits 增量=%.0f external_queries 增量=%.0f 耗时=%.1fs"
         % (d3["usage"]["prompt_tokens"], cached, 100 * cached / max(1, d3["usage"]["prompt_tokens"]),
            ext1 - ext0, extq1 - extq0, el3))
-    log("    期望验证码=%s | 回答含验证码=%s | 回答尾：%s" % (code, hit, txt[-160:].replace("\n", " ")))
+    log("    期望验证码=%s | 逐字命中=%s | content=%r | reasoning 长度=%d"
+        % (code, hit, content[:60], len(reasoning)))
+    if not content.strip():
+        log("    ⚠ content 为空：预算被思考吃掉，属探针假阴性，请加大 ANSWER_MAX_TOKENS 复验")
     log("终点 Xid=%s" % xid())
 
     ver = 1 if (ext1 - ext0 > 0 and hit and cached > 0) else 0
