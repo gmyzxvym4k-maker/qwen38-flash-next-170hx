@@ -67,14 +67,17 @@ echo <部署机 sudo 口令>|sudo -S -p '' dmesg | grep -c Xid                  
 | 重发同一文档问验证码 | `cached=53,328`（**95.4%**）、耗时 **1.2 s**、`external_prefix_cache_hits_total` 增量 **53,328** |
 | 内容正确性 | 验证码 `CODE-287365-3126` **逐字复述**（回载无损） |
 | 第 2 轮复测（20:21，60k-token 文档） | 挤池 **1,579,107 token** → `prompt=83,955 cached=80,800`（**96.2%**）、`external_hits` 增量 **80,800**、耗时 **1.5 s**；验证码 `CODE-288925-3126` 在把回答预算从 64 提到 900 后**逐字命中**（64 时正文为空 = 探针假阴性，见 `docs/08` **P67**） |
-| 稳定性 | 全程 `Xid=0`；实例段 `Segfault/EngineDead/Traceback` 计数 **0** |
+| 稳定性 | 全程 `Xid=0`；实例段 `Segfault/EngineDead/Traceback` 计数 **0**；**带 96GiB 档连续运行 70 分钟（越过历史 26~71 分钟病灶窗口）零 segfault** |
+| 重启后复测（20:53→20:58） | 挤池 130 万 token 后重发：`cached=53,328（95.3%）`、`external_hits` 增量 **53,328**、验证码逐字命中、`Xid=0` |
+| **PLE 是否在内存**（20:53 重启后实测） | `fincore`：INT8 表 **驻留 98.83%**（47.13/47.68 GiB）、scale 全驻留；worker 对产物的映射 61.95 GiB 中 **RSS 45.74 GiB**；空闲 30 s **majflt 增量=0**、20 s **盘读=0 MiB** ⇒ 查表全程在 RAM，只是"可回收页缓存"而非锁页 |
+| **4 并发吞吐**（seqs 2→4 后，空载实测 4×300 token） | **聚合 257.8 tok/s**，单流 64.5~68.8 tok/s（几乎不掉速）；FULL CUDA 图从捕获 2 个尺寸变 **3 个（bs=1,2,4）**；MTP 平均接受长度 4.66 |
 | 加压连测（20:22~20:33，3 轮挤池各 1,579,107 token） | **3/3 VERDICT=1**：每轮 `external_hits` 增量 **59,792**、`cached=94.9%`、验证码逐字命中；累计 `ext_hits=877,488 token`、`load_blocks=563`、`save_outcomes(stored)=272`、`pending_store` 稳定在 15（不增长＝无卡死传输）、`Xid=0`、`dsegv=dengine_err=0` |
 
 ## 5. 参数真值与三源同步
 `launch.env` ＝ 8889 `SCRIPT_MODELS['qwen3.8-flash-next-w4a16'].base` ＝ 快启预设
 `current-pp3-1m-mtp4-int8disk-32g`（显示名「当前固化-双卡PP2-1M-MTP4-**二级缓存96G**…」）。
 要点：`FN_PP=2`（本机在位 2 卡，`lspci -d 10de:` 数卡）、`FN_SIMPLE_OFFLOAD=96`、
-`FN_PLE_MMAP=1` + `FN_PLE_INT8_DIR=/media/ll/data/ple`、采样仍是复刻当轮的裸档
+`FN_PLE_MMAP=1` + `FN_PLE_INT8_DIR=/media/ll/data/ple`、**`FN_SEQS=4`**（10-06 20:53 按用户指定从 2 调到 4，聚合吞吐 257.8 tok/s）、采样仍是复刻当轮的裸档
 `t1.0/top_p0.95/top_k20/min_p0/presence0/repetition1.0`（反循环定档是 0.6/0.95/20/0/0.2/1.15，
 如复发言题三源一起改，见 `docs/08` P46/P62）。
 
