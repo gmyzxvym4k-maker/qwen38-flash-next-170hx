@@ -1,7 +1,7 @@
 #!/bin/bash
 # flash-next-0310-inner.sh — 官方 vLLM 0.31.0 + 运行时补丁栈（site-packages 零改动）
 #
-# 本机画像（192.168.1.127 / HUANANZHI X99-T8 / E5-2696 v4 / 251GiB 内存 / 2×CMP 170HX 64GiB）
+# 本机画像（`<DEPLOY_HOST>`（DHCP 会变）/ HUANANZHI X99-T8 / E5-2696 v4 / 251GiB 内存 / 2×CMP 170HX 64GiB）
 #   并行 = TP1 × PP2，层切分 26,22（48 层）；CUDA_VISIBLE_DEVICES 缺省 0,1
 #   PLE  n-gram 表默认走【INT8 磁盘 mmap】（DSH_PLE_MMAP=1 + DSH_PLE_INT8_DIR=/media/ll/data/ple，
 #        表 47.7+0.6 GiB 可回收页缓存）；FN_PLE_MMAP=0 则回官方 pinned-host BF16（95.4 GiB 锁页）。
