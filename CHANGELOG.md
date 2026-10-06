@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-10-06 晚 — ★vLLM 升到 0.31.0 + 「二级缓存·CPU」真正开起来（96 GiB，实测 95.4% 外档回载）
+
+- **【起因】** 用户问「二级缓存·CPU 没正常开启？」→ 核实：当时 18420 跑 chroot 旧栈（`0.1.dev20073`），
+  `cmdline` 无 kv-transfer/kv-offloading、`external_prefix_cache_queries=0`；旧栈上三条路都不通
+  （经典 `OffloadingConnector`=P54 回载不等价；`FN_SIMPLE_OFFLOAD` 旧 inner 不接线；
+  镜像自带的 SimpleCPU 模块缺 #13 clamp ⇒ 必复现 P61 segfault）。
+- **【做法】** 新建/复用宿主 venv `/media/ll/data/vllm-0310-env`（vLLM 0.31.0 + torch 2.13.0+cu130 +
+  flashinfer 0.7.0.post1 + cu13 软链 + dsh-logger-pkg），补丁全部运行时注入
+  （`stack-0310/patches/` 上游 8+2 钩、`stack-0310/patches-extra/` rt-patch #11/#13）。
+  先离线证明 **#13 对 0.31.0 直接可用**（自检 13/13 PASS 含金丝雀），再用 `vllm serve --help=all`
+  逐 flag 核对（`--kv-offloading-size/-backend`、`-cc.*`、`--no-enable-flashinfer-autotune` 等全在）。
+  PLE 表用 `scripts/quantize_ple.py` 从 W4A16 checkpoint 重新生成 INT8 产物
+  （`/media/ll/data/ple`，抽样 10 万行 **字节不一致=0 / relMSE=4.360e-05 / 行余弦 0.9999784**），
+  经 `DSH_PLE_MMAP=1` 走可回收页缓存（省 44 GiB）。
+- **【踩坑 P65】** 新写的 inner 忘了 source `launch.env` ⇒ 参数静默回落内置缺省
+  （`max_model_len=262144`、`kv_offloading_size="None"`），已补通道并加「已加载参数文件 N 项」判据行。
+- **【生产参数（与 chroot 那轮逐键同源）】** 1M(YaRN×4 副本) + TP1×PP2(26,22) + block1616 +
+  mamba float32 + moe auto + MTP4 + seqs2 + mbt8192 + gpu-mem0.95 + async + prefix-caching +
+  prompt-tokens-details + BF16 KV + `--disable-custom-all-reduce` + NCCL_P2P_DISABLE=1 +
+  思考 medium + 采样裸档 + **FN_SIMPLE_OFFLOAD=96** + **FN_PLE_MMAP=1**。
+- **【验收】** GPU KV 池 **1,210,374 token**（1M 并发 1.15×）；两 rank CPU 档 2224/2157 块（各 ≈48 GiB）
+  → **clamp 行确认 `2224 -> 2157`**；`tools/kvoff-accept-0310.py`：建档 55,924 tok → 挤池 **1,434,381 tok**
+  → 重发同文档 `cached=53,328（95.4%）`、`external_prefix_cache_hits_total` 增量 **53,328**、
+  验证码 `CODE-287365-3126` 逐字复述、耗时 9.7 s → **1.2 s**；全程 **Xid=0**、实例段零 segfault/EngineDead。
+  速度口径：端到端 72~82 tok/s（与 chroot 栈持平），MTP 接受计数正常增长。
+- **【管理台收口】** `tools/patch-stack-0310-1006.py`：`SCRIPT_MODELS.scriptNew/stopScriptNew` → 0.31 对、
+  栈哨兵改判 `vllm-0310/DISABLED`、`altLogs` 加 0310 日志、base 同步 `kvoff=simple/96 + pleInt8=1 + seqs=2`、
+  快启预设固化「双卡PP2-1M-MTP4-二级缓存96G」、看门狗栈阶梯加 0.31；已验证
+  `resolveStartScript → vllm-0310/start-flash-next-0310.sh`，控制台「vLLM」页版本徽章显示 `0.31.0`。
+- **【仍在观察】** `DSH_PLE_MMAP` 查表路径在 0.31 属首跑；历史 segfault 窗口是带档就绪后 26~71 分钟，
+  已挂 `tools/soak-0310-monitor.sh`（6 h，每 5 分钟一行写 `/home/ll/deploy/soak-0310.log`）。
+  回滚阶梯与判据见 `stack-0310/README-0310.md` §6。
 ## 2026-10-06 傍晚 — ★X99 双卡机（251 GiB 内存）配置档纠偏：W4A16-AutoRound 恢复生产 + PP 档对齐在位卡数
 
 - **【故障】** `<DEPLOY_HOST>`（HUANANZHI X99-T8 / E5-2696 v4 / 8×32 GiB / 2×CMP 170HX）按 8889「启动」

@@ -1,5 +1,8 @@
 # Qwen3.8-Flash-Next（W4A16-AutoRound）在 2× CMP 170HX 上的 vLLM 部署：可复现手册
 
+> ✅ **2026-10-06 晚（当前生产）：18420 = 官方 vLLM 0.31.0 运行时补丁栈 + 「二级缓存·CPU」96 GiB 已开**——PP2 + MTP4 + 1M(YaRN×4) + PLE INT8 磁盘 mmap。挤池 143 万 token 后重发 55,924-token 文档 → **95.4%（53,328 token）由内存档回载**、验证码逐字无损、Xid=0。
+> 复刻入口 [`stack-0310/`](stack-0310/README-0310.md)（含从零七步、验收期望值、回滚阶梯）；路由哨兵已改判 `vllm-0310/DISABLED`。
+>
 > 这是一套**已经在生产上跑着的**服务的完整复刻件：推理端点 `http://<部署机>:18420/v1`，
 > 模型 `qwen3.8-flash-next`（176B 总参 / 约 6B 激活的 MoE + PLE n-gram 嵌入 + GDN 线性注意力混合架构），
 > 跑在两张 64 GB 的 **NVIDIA CMP 170HX**（GA100 die，SM80，矿卡解锁）上，用 **PP2 + MTP4**，
