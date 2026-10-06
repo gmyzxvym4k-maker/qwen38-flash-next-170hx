@@ -68,6 +68,7 @@ echo <部署机 sudo 口令>|sudo -S -p '' dmesg | grep -c Xid                  
 | 内容正确性 | 验证码 `CODE-287365-3126` **逐字复述**（回载无损） |
 | 第 2 轮复测（20:21，60k-token 文档） | 挤池 **1,579,107 token** → `prompt=83,955 cached=80,800`（**96.2%**）、`external_hits` 增量 **80,800**、耗时 **1.5 s**；验证码 `CODE-288925-3126` 在把回答预算从 64 提到 900 后**逐字命中**（64 时正文为空 = 探针假阴性，见 `docs/08` **P67**） |
 | 稳定性 | 全程 `Xid=0`；实例段 `Segfault/EngineDead/Traceback` 计数 **0** |
+| 加压连测（20:22~20:33，3 轮挤池各 1,579,107 token） | **3/3 VERDICT=1**：每轮 `external_hits` 增量 **59,792**、`cached=94.9%`、验证码逐字命中；累计 `ext_hits=877,488 token`、`load_blocks=563`、`save_outcomes(stored)=272`、`pending_store` 稳定在 15（不增长＝无卡死传输）、`Xid=0`、`dsegv=dengine_err=0` |
 
 ## 5. 参数真值与三源同步
 `launch.env` ＝ 8889 `SCRIPT_MODELS['qwen3.8-flash-next-w4a16'].base` ＝ 快启预设
