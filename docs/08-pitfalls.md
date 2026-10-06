@@ -497,6 +497,52 @@ server.js base/模型目录/`pleInt8Dir`+plan 下发、两预设、wrapper `RA_L
 
 ---
 
+### P65 自己新写的 inner 忘了「参数通道」→ 静默按内置缺省起（症状：像启动成功了，但档位全错）（2026-10-06）
+
+给新栈写 wrapper+inner 时，只做了「wrapper 把控制台 FN_* 落盘 launch.env」这一半，
+忘了 inner 那一半必须 `set -a; . "$FN_ENVFILE"; set +a`——**sudo 的 env_reset 会把控制台传来的 FN_* 全部清掉**，
+落盘文件不被人读就等于没落。后果不是报错而是**静默回落内置缺省**：
+
+| 现象 | 本次实锤 |
+|---|---|
+| 上下文缩水 | 引擎 `/v1/models` 的 `max_model_len=262144`（应为 1048576），`GPU KV cache size … Maximum concurrency for **262,144** tokens` |
+| 二级缓存没开 | `cache_config_info{… kv_offloading_size="None", num_cpu_blocks="None"}`，日志里 SimpleCPUWorker 一行都不出 |
+| 采样/思考档漂移 | 实际生效的是 inner 内置值，不是弹窗/预设值 |
+
+**判据（别看 wrapper 有没有报错，它一定"成功"）**：
+① `tr '\0' '\n' < /proc/<APIServer pid>/cmdline | grep -aE 'max-model-len|kv-offloading'`；
+② `curl -s :18420/metrics | grep -a cache_config_info`（`kv_offloading_size`/`num_cpu_blocks` 必须非 None）；
+③ inner 启动即打一行 `[FN-0310] 已加载参数文件 …（N 项）`——没有这行就是通道断了。
+根治约定：**任何新写的 inner 第一段就是 source launch.env**（与 0.30/旧 chroot 栈同构），
+并在 wrapper 里禁止 `sudo -E`（会绕过落盘、留下两份真值）。
+
+### P66 vLLM 0.30.0 → 0.31.0 升级 + 「二级缓存·CPU」落地清单（2026-10-06 实测）
+
+一次做对的顺序与判据（全部在生产机验证过，命令见 `stack-0310/README-0310.md`）：
+
+1. **rt-patch #13 不用改**：`selftest_simple_rt_v13.py` 对 0.31.0 环境直接 **13/13 PASS**（含金丝雀）。
+   0.31 的 `simple_kv_offload/{manager,worker}.py` 虽改了（stats/boundary/`prefix_cacheable_group_ids`），
+   三个钩子锚点 `_derive_cpu_config` / `_init_cpu_mode` / `copy_blocks`+`build_params` 形状未变；
+   **但 0.31 上游仍是 `generate_scheduler_kv_cache_config` deepcopy `kv_cache_configs[0]` +
+   `_derive_cpu_config` 按 rank0 推块数** ⇒ P61 的口径分裂还在，#13 必须挂。
+2. **只给 `--kv-offloading-size` 不会启用 SimpleCPU**：`config/vllm.py` 需要
+   `envs.VLLM_USE_SIMPLE_KV_OFFLOAD=1`，否则 backend=native 走的是 `OffloadingConnector`（P54 已定案退役）。
+   inner 里两件事一起做，并与 `FN_KVOFF=1` 互斥拒绝启动。
+3. **hook8（QSA ring 收缩）保住 block 1616**：0.31 把 ring 放宽，`MTP K=5 ⇒ ring 12`，`1616%12≠0` 会在
+   加载权重后 AssertionError；hook 在「legacy 整除 block」时收缩。inner 另做同型前置校验（早失败、给人话）。
+4. **PP 两 rank 的 CPU 块数天生不等**：实跑 `PP0 2224 / PP1 2157 块`（PP1 多 LM+draft 注意力层、每块更大），
+   判据行 `[dsh-simple-rt] 握手 clamp：调度器 CPU 块数 2224 -> 2157（对齐最窄 worker，防 PP 越界）`；
+   没有这行 = clamp 没生效 = 迟早复现 P61 的原生 segfault。
+5. **换栈后日志文件属主坑**：新实例由 root 创建日志，宿主 wrapper 是 ll ⇒ `[wrapper] … 权限不够`（丢两行诊断，
+   不影响启动）。正解 `sudo chown ll:ll <log>`（root 仍写得进）。
+6. **PLE INT8 产物完整性判据**：`quantize_ple.py` 的两个 `.bin` 是**预分配**的（跑一半就在，体积正确），
+   只查 `.bin` 存在会误判"产物就绪" ⇒ 必须同时要求 `ple_ngram_meta.json`（收尾才生成），
+   或直接看 `[done]` / `[verify] … 字节不一致=0 relMSE=4.360e-05` 两行。
+7. **升级带来的内存好处**：`DSH_PLE_MMAP=1` 用 INT8 表 mmap（51.8 GiB 可回收）替代 0.30 的锁页 BF16（95.4 GiB），
+   于是「96 GiB CPU 档 + 51.8 GiB 表 + 权重页缓存」在 251 GiB 机上从容（实测 used 106 / cache 143 / avail 142）。
+
+---
+
 ## 附：已验证走不通的死路（别再试）
 
 | 尝试 | 结论 |
@@ -516,3 +562,4 @@ server.js base/模型目录/`pleInt8Dir`+plan 下发、两预设、wrapper `RA_L
 | 「加大 pinned 到 >GPU 池」在 251 GB 内存机上硬做 | PLE 95 GB + 私有 pinned 1.56× 必超配，MCE 硬挂风险（P56） |
 | MTP6 / MTP1 在本档 | MTP6 触发 QSA ring 断言（P04）；MTP1 实测比 MTP4 慢 22% |
 | 沿用另一台机器的 launch.env/控制台预设（卡数、内存档不同）直接按启动 | PP 档/PLE 档与在位硬件冲突，症状是「按了没反应」而非报错（P64） |
+| 在 chroot 旧栈上直接开 SimpleCPU 二级缓存（镜像里有 `simple_kv_offload/` 模块） | 该镜像版本缺 #13 握手 clamp 与逐块拷贝守卫 ⇒ 原样复现 P61 的 PP1 原生 segfault；要开就升 0.31.0 栈（P66） |
