@@ -543,6 +543,24 @@ server.js base/模型目录/`pleInt8Dir`+plan 下发、两预设、wrapper `RA_L
 
 ---
 
+### P67 二级缓存验收的两种假阴性（都实锤过，别拿它们当"回载坏了"）（2026-10-06 第二轮）
+
+同一套验收（`tools/kvoff-accept-0310.py`）跑第二轮，指标全绿却判 `VERDICT=0`：
+
+| 假阴性 | 症状 | 真因 | 修法 |
+|---|---|---|---|
+| **回答预算被思考吃满** | `external_prefix_cache_hits_total` 增量 80,800、`cached=80,800（96.2%）` 都对，但"验证码复述"判 False，`content` 是空串 | `max_tokens=64` 对 xhigh/medium 思考模型不够，reasoning 吃光预算 → 正文 0 字 | 探针 `ANSWER_MAX_TOKENS` 缺省提到 **900**；判定必须 **合并 `content` + `reasoning_content`**；正文为空时直接打"假阴性，请加大预算复验"的告警行（09-27 就留过同样的 TODO，这次补齐） |
+| **curl 传长文档** | `OSError: [Errno 7] Argument list too long: 'curl'` | 单个命令行参数受 `MAX_ARG_STRLEN`=128 KB 限制（中文 84k token ≈ 340 KB），**不是** ARG_MAX 总量 | 发请求走 `urllib.request`（脚本本就是），任何临时复验也别用 `curl -d "$文档"` |
+
+**复验结论**（同一份文档、同 nonce 重发，预算 900）：`content='\n\nCODE-288925-3126'`
+→ **逐字命中 True**，`prompt=83,959 / cached=80,800 / 1.7 s`；第二轮 `external_hits` 增量 0 属正常
+（前一轮已把该前缀装回 GPU 池，这次命中的是显存档）。
+
+判据纪律：**"外档命中"与"回载正确性"必须分开取数**——前者只看 `/metrics` 计数器增量，
+后者需要一次真正产出正文的问答；任何一侧被探针参数卡住都会把健康的系统判成故障。
+
+---
+
 ## 附：已验证走不通的死路（别再试）
 
 | 尝试 | 结论 |
