@@ -461,6 +461,42 @@
 
 ---
 
+### P64 沿用另一台机器的配置档（卡数/内存档不同）→「按启动没反应」型失败（2026-10-06）
+
+症状：8889 控制台点「启动」后端口始终不 LISTEN、实例日志尾部只有一轮 `[shutdown] … SIGTERM`，
+或引擎在 WorkerProc 初始化处报错；`dmesg` Xid=0、机器不硬挂。看着像「模型坏了」，实为**配置档与在位硬件不符**。
+
+本机实锤链：这台机是 HUANANZHI X99-T8 + E5-2696 v4 + 8×32 GiB（251 GiB 内存）+ **2×CMP 170HX**
+（`lspci -d 10de:` 只有 `03:00.0`/`04:00.0`，第三张卡 10-06 傍晚已拆走），
+但 10-05 那批换装 EPYC/3 卡/32 GiB 机器的描述一路留在配置里：
+`server.js` `SCRIPT_MODELS.base.pp=3` 与 `pleInt8='1'`、两张快启预设 `gpuCount:'3'`、
+wrapper `RA_LOAD` 缺省 16、udev 规则 `read_ahead_kb=16`、inner 的 INT8 目录缺省 `ple-w8a8`。
+⇒ 任何一次 UI/看门狗重放都会下发 `FN_PP=3`，2 张卡起 3 个 PP rank 必然失败。
+
+四处对账判据（换卡/换内存/换盘/换模型后必须逐条核）：
+
+| 位置 | 查法 | 期望 |
+|---|---|---|
+| 在位卡数 | `lspci -d 10de: \| wc -l` | 与 base.pp / 预设 gpuCount 相等 |
+| 生产模型目录 | `curl :8889/v1/models` 与 `ls /media/ll/data/models` | `SCRIPT_MODELS.modelPath` = 真要跑的 checkpoint |
+| PLE 精度可行性 | `free -g` 内存 vs 表体积（INT8 48 GiB / BF16 95 GiB）；`ls <INT8 目录>/ple_ngram_meta.json` | 产物不存在就别选 INT8（inner 会回落 BF16，但 UI 显示会骗人） |
+| 预读 | `cat /sys/block/<by-id 解析出的数据盘>/queue/read_ahead_kb` | 大内存机 128（09-23 实测拐点），只有内存装不下表时才降 |
+
+一次收口件：`tools/patch-w4a16-restore-1006.py`（幂等，`--revert` 可回滚，六处=
+server.js base/模型目录/`pleInt8Dir`+plan 下发、两预设、wrapper `RA_LOAD`、udev 规则、看门狗回退档、
+删 `fnx-manual-stop` 闩锁）。
+
+**验证手法（别看 JSON 就收工）**：用 node vm 把 `SCRIPT_MODELS` 条目与 `scriptModelLaunchPlan` 抽出来真跑，
+分别喂「弹窗默认（空 params）」与「两条预设」，把得到的 `FN_*` 与在跑实例 `/proc/<pid>/cmdline` 逐 token 对账；
+再 `FN_DRY_RUN=1 bash start-flash-next-w4a16.sh` 看 inner 生成的 argv。
+两个长期坑顺带记牢：① wrapper 每次启动都会用当前环境**重写** `launch.env`，
+所以 dry-run 时导出的 `FN_DRY_RUN=1`/`FN_LOG=/tmp/…` 也会被写进去 ⇒ 事后必须删掉这两行，
+否则看门狗会「忠实重放」出一个只打印命令的假启动；
+② `udevadm test` 以普通用户跑时报 `Failed to write ATTR… Permission denied` 属正常（规则由 root 的 udevd 执行），
+复核要 `sudo udevadm trigger --action=change --sysname-match=<盘>` 后读回数值。
+
+---
+
 ## 附：已验证走不通的死路（别再试）
 
 | 尝试 | 结论 |
@@ -479,3 +515,4 @@
 | SimpleCPU 二级缓存间歇 PP1 segfault，先后按「attrIdxs 越界（#10）」「批量 API 不稳定（#11）」修复均失败 | 两条都是**误诊**（P59→P60→P61 两次更正）。最终根因=**PP2 下调度器与 worker 的 CPU 块 id 空间口径分裂**，越界地址喂给驱动（P61）。正解=rt-patch #13 握手 clamp |
 | 「加大 pinned 到 >GPU 池」在 251 GB 内存机上硬做 | PLE 95 GB + 私有 pinned 1.56× 必超配，MCE 硬挂风险（P56） |
 | MTP6 / MTP1 在本档 | MTP6 触发 QSA ring 断言（P04）；MTP1 实测比 MTP4 慢 22% |
+| 沿用另一台机器的 launch.env/控制台预设（卡数、内存档不同）直接按启动 | PP 档/PLE 档与在位硬件冲突，症状是「按了没反应」而非报错（P64） |

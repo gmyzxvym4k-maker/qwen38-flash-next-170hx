@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-10-06 傍晚 — ★X99 双卡机（251 GiB 内存）配置档纠偏：W4A16-AutoRound 恢复生产 + PP 档对齐在位卡数
+
+- **【故障】** `<DEPLOY_HOST>`（HUANANZHI X99-T8 / E5-2696 v4 / 8×32 GiB / 2×CMP 170HX）按 8889「启动」
+  起不来 `Qwen3.8-Flash-Next-W4A16-AutoRound`：实例日志尾部只见上一轮 `[shutdown] … SIGTERM`，
+  新启动连 Worker 都起不齐；`dmesg` Xid=0、MCE=0，机器不硬挂。
+- **【根因】** 配置档整体还是 10-05 那台「EPYC+3 卡+32 GiB」机的描述：
+  `SCRIPT_MODELS.base.pp=3`、两条快启预设 `gpuCount:'3'`、`base.pleInt8='1'`（而 W4A16 的
+  INT8 n-gram 表产物 `/media/ll/data/ple` 从未生成，`ple-w8a8` 那份属另一 checkpoint，跨用会
+  「内容词对、标点乱」）、wrapper `RA_LOAD` 缺省 16、udev `read_ahead_kb=16`；
+  且 `modelPath/longCtxModelPath` 仍指 `Channel-INT8-w8a8`。
+  2 张卡在位却下发 `--pipeline-parallel-size 3` ⇒ 必然起不来（判据 `lspci -d 10de:`）。
+- **【修复】** `tools/patch-w4a16-restore-1006.py`（幂等 + `--revert`，一次收口六处：
+  server.js 模型目录/base.pp=2/base.pleInt8='0'/`pleInt8Dir`+plan 下发 `FN_PLE_INT8_DIR`、
+  两预设 gpuCount 2 + pleInt8 0 + 名称纠偏、wrapper `RA_LOAD` 128、udev 128、
+  看门狗内置回退档 `FN_PLE_INT8=0`、删 `fnx-manual-stop` 闩锁恢复自愈）。详见 `docs/08-pitfalls.md` **P64**。
+- **【启动（=刚才的参数，逐键复刻 16:11 那轮 launch.env，只改两处硬件不匹配项）】**
+  1M(YaRN×4 副本) + TP1×**PP2** + block 1616 + mamba float32 + moe auto + MTP4 + seqs2 + mbt8192 +
+  gpu-mem 0.95 + async-scheduling + prefix caching + BF16 KV + `--disable-custom-all-reduce` +
+  NCCL_P2P_DISABLE=1 + PLE=**BF16 磁盘驻留** + 思考 medium + 采样 t1.0/top_p0.95/top_k20/pp0/rp1.0 + 二级缓存关。
+  18:40 发起 → 18:51 health=200（约 11 分钟：PLE 表 mmap → 权重 143 s → compile+建池+图 176 s）。
+- **【验收】** `GPU KV cache size: 1,199,694 tokens`（1 M 请求并发 1.14×，比 3 卡 PP3 的 1,099,915 更大）；
+  判据行 `[FN-PLE-LOC] PLE 表走 BF16 磁盘驻留（mmap safetensors，零堆…）` +
+  `[FN-PLE-DISK] n-gram table attached from model-00016-of-00017.safetensors: dtype=torch.bfloat16 contiguous=95.37 GiB`；
+  temp0 冒烟问答正确、无 uct/duct 病理；`/metrics` MTP 接受 token 计数递增（投机生效）；
+  直连 18420 与走 8889 代理（别名 `qwen3.8-flash-next`）两条路都通；`prompt_tokens_details.cached_tokens` 有值；
+  Xid=0、MCE=0、内存 used ~8 GiB + 页缓存 77 GiB（表全驻留）；数据盘 read_ahead_kb=128（root trigger 复验通过）。
+- **【如实说明】** ①本机 W4A16 的 INT8 表产物不存在 ⇒ 这一轮走 BF16（与 INT8 档历史实测速度持平，
+  代价是冷启动多 2~4 分钟、页缓存多吃 ~47 GiB）；要 INT8 档需先跑
+  `scripts/quantize_ple.py --model <W4A16 目录> --out /media/ll/data/ple`（约 11 分钟）再把预设/弹窗的
+  PLE 精度切回 INT8。②运行实例的采样是「刚才」那轮的裸档 t1.0/pp0/rp1.0，与 09-29 反循环定档
+  （0.6/0.2/1.15）不同，属按用户要求原样复刻；如复发言题，改 `launch.env` 的 `FN_GENCFG` 并重启即可。
 ## 2026-10-05 上午 — ★126 机（32GB 内存）启动页 heap 参数 OOM 循环定版 + 双层钳位闸
 
 - **【故障签名】** 管理页启动 18420 → 引擎在加载期死：日志 `RuntimeError: PLE offload worker exited during startup` + `Engine core initialization failed`；`dmesg` 连续 `oom-kill`（被杀进程 anon-rss ~24GiB 持续增长中）。08:58/09:01/09:04/09:2x/09:2x 五连，看门狗每 3 分钟按旧 envfile 原样重拉 → 无限循环。
