@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-07 — ★vllm31 版本归档：0.31.0 生产配置环境 + 内存二级缓存优化（运维件入库）
+
+- **版本核实（10-07 实测）**：生产 = 官方 vLLM **0.31.0**（PyPI 同日最新，10-05 发布 / 10-06 上线，零滞后），
+  torch 2.13.0+cu130；连续 11.5 小时零崩溃。当场实测全绿：MTP4 接受率 66.8% / 长度 2.67、
+  前缀缓存累计 91.7%、**CPU 内存二级缓存 external hits 2562 万 / 3116 万 = 82.2%**（rt-patch #13
+  握手 clamp 2224→2157 生效）、cached_tokens 上报正常、工具调用 / reasoning_effort / json_schema /
+  Anthropic /v1/messages / 流式 include_usage 均可用。
+- **二级缓存·内存（本次主题）**：`FN_SIMPLE_OFFLOAD=96`（GiB，SimpleCPUOffloadConnector）生产常开，
+  CPU 档 ≈348.6 万 token = 2.88× GPU 池（1,210,374）；挤池 >120 万后重发实测 cached 94.9~96.2%、
+  验证码逐字命中、带档 69 分钟零 segfault（P61 越界缺陷由 rt-patch #13 修复，官方 0.31 仍未修，必挂）。
+- **运维件入库 `stack-0310/tools/`**（上次 0.31 归档只收了启动件，本轮补齐四类）：
+  `patch-stack-0310-1006.py`（控制台/看门狗 0.30→0.31 栈路由幂等补丁，--revert 可回退）、
+  `check-route-1006.js`（vm 提取 scriptModelLaunchPlan 真实执行、与生产 cmdline 对账的路由校验）、
+  `kvoff-accept-0310.py`（二级缓存三口径验收探针）、
+  `soak-0310-monitor.sh` v3（长跑看护，引擎真值口径）。
+- **脱敏**：tools/ 四件口令一律 SUDO_PASS 环境变量占位、内网 IP 不入库；全仓复扫 `3124` / `192.168.x` 命中 0。
+
 ## 2026-10-06 深夜 — ★回答「PLE 没加载进内存？」= 已加载（驻留 98.83%、服务期零缺页）+ 并发 2→4（聚合 257.8 tok/s）
 
 - **PLE 实测**：`fincore` 显示 INT8 n-gram 表驻留 **98.83%**（47.13/47.68 GiB）、scale 全驻留；
