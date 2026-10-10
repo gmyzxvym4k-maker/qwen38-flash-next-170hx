@@ -10,7 +10,7 @@
 #
 # 本文件缺省值 = 2026-10-06 生产逐键（1M YaRN×4 / block1616 / MTP4 / seqs2 / gpu0.95 / async /
 #   思考 medium / 二级缓存关→由 launch.env 显式开），与 8889 控制台 SCRIPT_MODELS.base 对齐；
-#   采样缺省用 09-29 反循环定档 0.6/0.95/20/0/0.2/1.15（控制台 base 相同时不下发 FN_GENCFG）。
+#   采样缺省=10-10 用户定档官方默认 1/0.95/20/0/0/1（控制台 base 相同时不下发 FN_GENCFG）。
 #
 # 用法：
 #   FN_DRY_RUN=1 bash flash-next-0310-inner.sh     # 只打印 argv（离线可跑，不碰 GPU）
@@ -51,7 +51,7 @@ BLOCK=${FN_BLOCK:-1616}
 MBT=${FN_MBTOKENS:-8192}
 MOE=${FN_MOE:-auto}
 SSMDTYPE=${FN_SSMDTYPE:-float32}
-GENCFG=${FN_GENCFG:-'{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.2,"repetition_penalty":1.15}'}
+GENCFG=${FN_GENCFG:-'{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0,"repetition_penalty":1.0}'}
 CHATKW=${FN_CHATKWARGS:-'{"enable_thinking":true,"preserve_thinking":true,"reasoning_effort":"medium"}'}
 CUDAGRAPH=${FN_CUDAGRAPH:-FULL_AND_PIECEWISE}
 CAPTURE_SIZES=${FN_CAPTURE_SIZES:-[1,2,4,8,16,24,32,40]}
