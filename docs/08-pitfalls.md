@@ -591,6 +591,40 @@ server.js base/模型目录/`pleInt8Dir`+plan 下发、两预设、wrapper `RA_L
 
 ---
 
+### P70 管理台卡片显示的是旧档位：磁盘文件已改、进程内存态没换（2026-10-10）
+
+现象：8889「PLE 表驻留」卡显示「🗂 内存中的文件页缓存（mmap，可回收） · 95.4 GiB」，
+而引擎日志明写 `[rt-patch-0310] PLE anon-heap storage attached: 47.7 GiB … (resident, non-reclaimable)`。
+
+排查路径（一次到位，别再猜日志选错）：把 `server.js` 里的解析函数原样抠进 node vm，对每个候选日志各跑一遍
+⇒ 0310 日志解析结果**本来就是对的**（`{dtype:int8, loc:heap, gib:47.7, resident:true}`），说明解析代码没问题。
+真正的差异在进程：`stat -c %y server.js` = 08:06，而
+`systemctl --user show dsh-console -p ExecMainStartTimestamp` = **07:32** ——
+服务进程里跑的是**改之前**的 `matchPleLine`，它不认新增的匿名堆判据行，于是回落到旧日志的旧档（95.4 GiB）。
+
+正解：`systemctl --user restart dsh-console`（该 unit 带 `KillMode=process`，不会误杀 18420 实例，实测 health 仍 200）。
+
+纪律：**改 `server.js` 后必须重启 dsh-console 再验证**，判据是 `ExecMainStartTimestamp` 晚于文件 mtime；
+而 `index.html` / `vllm.html` 是每请求 `readFileSync`，改完即时生效——两类文件生效条件不同，别混为一谈。
+
+### P71 PLE 匿名堆读取器首跑必崩：memoryview 的 2-D 切片赋值（2026-10-10）
+
+`_dsh_read_into_anon()` 里 `mv = memoryview(arr.data)` 然后 `mv[pos:pos+len(b)] = b`。
+`arr` 是 `allocate_embedding_weight` 返回的 **2-D** `(num_embeddings, embedding_dim)` 张量，
+`arr.data` 继承这个形状 ⇒ 切片赋值抛
+`NotImplementedError: memoryview slice assignments are currently restricted to ndim = 1`
+⇒ Worker_PP0 起不来 ⇒ `EngineCore failed to start` ⇒ 端口不 LISTEN（health=000），
+症状看起来像"配置改坏了"，实际是读取器自身的 bug。
+
+正解：`mv = memoryview(arr).cast("B")`（先 cast 成字节视图再切）。
+重打件 `stack-0310/tools/patch-anonple-memview-1010.py`（幂等、`--revert` 可撤）。
+
+纪律：给 torch 张量做"按字节写入"前先确认它的 `ndim`；配套一次性自检要做三件事——
+2-D 大数组逐字节比对、1-D 档比对、确认目标确实是匿名缓冲；
+且**必须用推理 venv 的 python 跑自检**（系统 `python3` 无 numpy，会给出假失败）。
+
+---
+
 ## 附：已验证走不通的死路（别再试）
 
 | 尝试 | 结论 |
@@ -611,3 +645,4 @@ server.js base/模型目录/`pleInt8Dir`+plan 下发、两预设、wrapper `RA_L
 | MTP6 / MTP1 在本档 | MTP6 触发 QSA ring 断言（P04）；MTP1 实测比 MTP4 慢 22% |
 | 沿用另一台机器的 launch.env/控制台预设（卡数、内存档不同）直接按启动 | PP 档/PLE 档与在位硬件冲突，症状是「按了没反应」而非报错（P64） |
 | 在 chroot 旧栈上直接开 SimpleCPU 二级缓存（镜像里有 `simple_kv_offload/` 模块） | 该镜像版本缺 #13 握手 clamp 与逐块拷贝守卫 ⇒ 原样复现 P61 的 PP1 原生 segfault；要开就升 0.31.0 栈（P66） |
+| 想靠「给 mmap 的 PLE 表 mlock」让内存**已用**里体现这张表 | mlock 的是**文件页**，仍算 buff/cache；只有私有匿名页算已用 ⇒ 必须走匿名堆档（`README-0310.md` §8、P70） |

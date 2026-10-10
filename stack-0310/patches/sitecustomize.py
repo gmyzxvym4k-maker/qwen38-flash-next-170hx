@@ -195,18 +195,94 @@ _DSH_PLE_MMAP = os.environ.get("DSH_PLE_MMAP", "0") == "1"
 _PLE_MMAP_CACHE: dict = {}
 
 
+def _dsh_mlock(addr: int, length: int) -> str:
+    """Best-effort mlock of an mmap range (root + unlimited memlock).
+
+    Returns a short status string for logging; never raises. Without this the
+    table lives in reclaimable page cache: fast while RAM is free, but the
+    kernel may silently drop those pages under memory pressure (then n-gram
+    lookups start hitting NVMe again). Locking makes residency guaranteed, and
+    as a side effect the pages stop counting as "cache" and start counting as
+    used memory -- that is the honest accounting for "PLE 表在内存里".
+    """
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        libc.mlock.restype = ctypes.c_int
+        libc.mlock.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        rc = libc.mlock(ctypes.c_void_p(addr), ctypes.c_size_t(length))
+        if rc == 0:
+            return "locked"
+        err = ctypes.get_errno()
+        return f"mlock rc={rc} errno={err} (EPERM=1 需要 CAP_IPC_LOCK/memlock 不限; ENOMEM=12 地址区间未映射或超出 RLIMIT)"
+    except Exception as exc:  # never break loading over a nicety
+        return f"mlock skipped: {exc!r}"
+
+
 def _ple_mmap_tensor(path: str, rows: int, cols: int, torch_dtype):
     """Read-only zero-copy mmap view [rows, cols] of a flat binary."""
     import numpy as np
 
     itemsize = {np.dtype(np.int8): 1}.get(np.dtype("int8"), 1)
+    lock = os.environ.get("DSH_PLE_MMAP_LOCK", "0") == "1"
     if torch_dtype == __import__("torch").int8:
         arr = np.memmap(path, dtype=np.int8, mode="r", shape=(rows, cols))
+        if lock:
+            _st = _dsh_mlock(int(arr.ctypes.data), int(arr.nbytes))
+            _log(f"PLE mmap mlock int8 {arr.nbytes / 2**30:.2f} GiB -> {_st}")
     else:  # bfloat16 via uint16 raw view
         arr = np.memmap(path, dtype=np.uint16, mode="r", shape=(rows,))
+        if lock:
+            _st = _dsh_mlock(int(arr.ctypes.data), int(arr.nbytes))
+            _log(f"PLE mmap mlock bf16-raw {arr.nbytes / 2**30:.2f} GiB -> {_st}")
         t = __import__("torch").from_numpy(arr)
         return t.view(__import__("torch").bfloat16)
     return __import__("torch").from_numpy(np.asarray(arr))
+
+
+def _dsh_ple_anon_enabled() -> bool:
+    return os.environ.get("DSH_PLE_MEM_RESIDENT", "0") == "1"
+
+
+def _dsh_read_into_anon(path, np_dtype, shape):
+    """[anon-ple 1010] Load a flat artifact into ANONYMOUS resident memory.
+
+    Unlike np.memmap the bytes live in private anonymous pages: they count
+    towards process RSS / "used" memory and are never reclaimed by the kernel
+    (even mlock()'d file pages stay in the "cache" bucket). Peak RAM ==
+    artifact size; reading is parallel sequential pread straight into slices
+    of the destination array (no extra buffering)."""
+    import numpy as np
+    from concurrent.futures import ThreadPoolExecutor
+    arr = np.empty(shape, dtype=np_dtype)
+    # [anon-ple-fix-1010] memoryview(ndarray.data) 继承数组形状，2-D 时
+    # mv[a:b] = bytes 抛 NotImplementedError（CPython 只允许 ndim=1）。
+    # cast("B") 取同一缓冲的 1-D 字节视图，写入语义等价、无额外拷贝。
+    mv = memoryview(arr).cast("B")
+    nbytes = arr.nbytes
+    CH = 128 << 20
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        offs = list(range(0, nbytes, CH))
+
+        def _rd(o):
+            end = min(o + CH, nbytes)
+            pos = o
+            while pos < end:
+                b = os.pread(fd, end - pos, pos)
+                if not b:
+                    raise RuntimeError(f"short read at {pos} of {path}")
+                mv[pos:pos + len(b)] = b
+                pos += len(b)
+        if len(offs) > 1:
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                list(ex.map(_rd, offs))
+        elif offs:
+            _rd(0)
+    finally:
+        os.close(fd)
+    return arr
+
 
 
 def _build_int8_method_class(module):
@@ -553,8 +629,12 @@ def _build_mmap_embed_class(common_mod):
                     f"PLE mmap artifact rows {art_rows} != table "
                     f"{rows_table} (org {org_total})")
             import numpy as _np
-            self._dsh_scale_np = _np.memmap(s_path, dtype=_np.uint16,
-                                            mode="r", shape=(art_rows,))
+            if _dsh_ple_anon_enabled():
+                self._dsh_scale_np = _dsh_read_into_anon(
+                    s_path, _np.uint16, (art_rows,))
+            else:
+                self._dsh_scale_np = _np.memmap(s_path, dtype=_np.uint16,
+                                                mode="r", shape=(art_rows,))
             self._dsh_np_w = None
             heads = int(kw.get("num_ngram_heads", 1) or 1)
             self._dsh_heads = heads
@@ -602,8 +682,13 @@ def _build_mmap_embed_class(common_mod):
             self._dsh_worker = None
             self._dsh_q = __import__("queue").SimpleQueue()
             _DSH_PLE_REGISTRY[id(self)] = self
-            _log(f"PLE mmap storage attached: {wbytes/(1<<30):.1f} GiB from "
-                 f"{d}; capture-safe rings {NBUF}x{max_rows*heads} rows")
+            _mode_tag = ("PLE anon-heap storage attached"
+                        if _dsh_ple_anon_enabled()
+                        else "PLE mmap storage attached")
+            _log(f"{_mode_tag}: {wbytes/(1<<30):.1f} GiB from "
+                 f"{d}; capture-safe rings {NBUF}x{max_rows*heads} rows"
+                 + (" (resident, non-reclaimable)"
+                    if _dsh_ple_anon_enabled() else ""))
 
         def allocate_embedding_weight(self, num_embeddings, embedding_dim,
                                       dtype):
@@ -615,6 +700,10 @@ def _build_mmap_embed_class(common_mod):
                 raise RuntimeError(
                     f"PLE mmap artifact {os.path.getsize(path)} B != "
                     f"table {want} B ({path})")
+            if _dsh_ple_anon_enabled():
+                art = _dsh_read_into_anon(path, np.int8,
+                                          (num_embeddings, embedding_dim))
+                return torch.from_numpy(art)
             art = np.memmap(path, dtype=np.int8, mode="r",
                             shape=(num_embeddings, embedding_dim))
             import warnings

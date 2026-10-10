@@ -63,10 +63,18 @@ SPEC=${FN_SPEC:-'{"method":"mtp","num_speculative_tokens":4,"use_local_argmax_re
 # 显式 FN_PLE_MMAP 优先。
 if [ -n "${FN_PLE_MMAP:-}" ]; then
   PLE_MMAP=$FN_PLE_MMAP
-elif [ "${FN_PLE_INT8:-1}" = "0" ] || [ "${FN_PLE_LOC:-disk}" = "heap" ]; then
+  PLE_ANON=0
+elif [ "${FN_PLE_INT8:-1}" = "0" ]; then
   PLE_MMAP=0
+  PLE_ANON=0
+elif [ "${FN_PLE_LOC:-disk}" = "heap" ]; then
+  # [anon-ple 1010] INT8+放内存 = 匿名堆驻留：不可回收且**计入「已用」内存**。
+  # （mlock 文件页只保证驻留，内核记账仍留在缓冲/缓存；要"占用已用"必须匿名页。）
+  PLE_MMAP=1
+  PLE_ANON=1
 else
   PLE_MMAP=1
+  PLE_ANON=0
 fi
 PLE_INT8_DIR=${FN_PLE_INT8_DIR:-${DSH_PLE_INT8_DIR:-/media/ll/data/ple}}
 CUDA_DEVS=${FN_CUDA_VISIBLE_DEVICES:-$(seq -s, 0 $((PP*TP-1)))}
@@ -120,7 +128,19 @@ if [ "$PLE_MMAP" = "1" ]; then
      && [ -f "$PLE_INT8_DIR/ple_ngram_meta.json" ]; then
     export DSH_PLE_MMAP=1
     export DSH_PLE_INT8_DIR="$PLE_INT8_DIR"
-    echo "[FN-PLE] INT8 磁盘 mmap：$PLE_INT8_DIR（47.7+0.6 GiB 可回收页缓存，不锁页）" >&2
+    if [ "$PLE_ANON" = "1" ]; then
+      # [anon-ple 1010] 匿名堆驻留（用户要求：在内存中不可回收、计入已用）。
+      # 代价：启动多 ~20-40s 顺序读 48GB；物理占用与原 mlock 档相同，只是记账桶从
+      # 缓冲/缓存变为已用（诚实反映"表在内存里"）。
+      export DSH_PLE_MEM_RESIDENT=1
+      echo "[FN-PLE] INT8 内存驻留（匿名堆）：$PLE_INT8_DIR（47.7+0.6 GiB，不可回收、计入已用）" >&2
+    else
+      # FN_PLE_LOCK=1（缺省）⇒ 对表做 mlock：保证常驻不被回收（注意：内核记账仍在
+      # 缓冲/缓存，不进「已用」；要计入已用请选「PLE 表位置=放内存」匿名堆档）。
+      # 想回到纯可回收页缓存：FN_PLE_LOCK=0。
+      export DSH_PLE_MMAP_LOCK=${FN_PLE_LOCK:-1}
+      echo "[FN-PLE] INT8 磁盘 mmap：$PLE_INT8_DIR（47.7+0.6 GiB，mlock=${DSH_PLE_MMAP_LOCK}）" >&2
+    fi
   else
     die "FN_PLE_MMAP=1 但产物不全：$PLE_INT8_DIR/ple_ngram_int8.bin|ple_ngram_scale.bin。先生成（scripts/quantize_ple.py）或改 FN_PLE_MMAP=0 走官方锁页 BF16（95.4 GiB）"
   fi
