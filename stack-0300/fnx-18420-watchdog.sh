@@ -1,11 +1,12 @@
 #!/bin/bash
 # Flash-Next W4A16 (18420) 看门狗 —— 2026-09-23 上线
-# 背景：机器反复重启 + 外部自动化主机频繁操作，18420 被杀后完全不自愈。
+# 背景：机器反复重启 + 外部 192.168.1.36 自动化频繁操作，18420 被杀后完全不自愈。
 # 逻辑：每 30s 探 /health
 #   200                  -> 清零失败计数，退出
 #   非200 但进程还在     -> 视为启动中/停止中，不动
 #   非200 且无实例进程   -> 连续 2 次（约 60s）确认离线 -> 清残留 -> 等显存归零 -> 拉起
-# 启动参数与生产定版一致（1M + MTP4 + PLE INT8 heap + KVOFF=1 96GiB，09-24 同步）。
+# 启动参数优先回放 launch.env；内置回退档 10-05 随机换装机修订（32GB 内存红线：
+#   PLE INT8+disk、无二级缓存；旧注"INT8 heap + KVOFF 96GiB"仅适用换装前的大内存机）。
 # 09-26 改：栈路由不再写死。默认托管【官方 vLLM 0.30.0 新栈】(/home/ll/deploy/vllm-0300)；
 #   出现回滚哨兵 /home/ll/deploy/vllm-0300/DISABLED 时自动退回 chroot 旧栈脚本。
 #   判活/取证一律与栈无关（见 vllm_alive：按 --port 圈定，两种 APIServer 形态都认）。
@@ -15,18 +16,57 @@ set -u
 # py-spy 装在 ~/.local/bin，systemd user 环境的默认 PATH 不含它；不导出则卡死取证
 # 永远只产出 "timeout: 无法运行命令 py-spy"（2026-09-24 实锤，stall-dumps 3 个空文件）。
 export PATH="$HOME/.local/bin:$PATH"
+# 提权口令来源（仓库内不留明文）：CONSOLE_SUDO_PASS 或 ~/.console-sudo。
+# 看门狗跑在 systemd user 定时器里，取不到口令绝不能让整个探活流程挂掉：
+# 只关掉卡死取证（py-spy dump 需 root），健康检查与自愈拉起照常工作。
+DEPLOY_DIR=${DEPLOY_DIR:-/home/ll/deploy}
+HAVE_SUDO_PW=1
+CONSOLE_SUDO_INTERACTIVE=0   # 定时器里没有 TTY，禁掉交互式兜底以免挂在读输入上
+# helper 查找顺序：DEPLOY_DIR → 脚本所在目录 → 上级目录（兼容仓库开发与单文件 scp 上线）
+CDIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
+for _csudo_lib in "$DEPLOY_DIR/lib/sudo-pass.sh" ${CDIR:+"$CDIR/lib/sudo-pass.sh"} ${CDIR:+"$CDIR/../lib/sudo-pass.sh"}; do
+  [ -n "$_csudo_lib" ] && [ -f "$_csudo_lib" ] && { . "$_csudo_lib"; break; }
+done
+if [ "$(type -t require_sudo_pass)" = "function" ]; then
+  # 屏蔽 helper 的 stderr：它在 30s 一次的定时器里会把"取不到口令"刷成一坨
+  require_sudo_pass 2>/dev/null || HAVE_SUDO_PW=0
+else
+  HAVE_SUDO_PW=0
+fi
 PORT=18420
 LOG=/home/ll/deploy/fnx-watchdog.log
 STATE=/tmp/fnx-watchdog-fail
 LOCK=/tmp/fnx-watchdog.lock
+# [tier-keep-1010] 连续崩溃剥档策略（用户 2026-10-10 拍板：自愈默认【保留】内存二级缓存档，
+# 只有连续崩溃达到 CRASH_STRIP_AFTER 次才剥档）。计数文件：
+#   CRASH_N  = 本轮连续崩溃计数（每次看门狗发起拉起 +1；实例稳定在线后清零）
+#   CRASH_AT = 最近一次看门狗发起拉起的时刻（判"崩溃链断裂"的基准）
+# 断裂判据：某次拉起后实例稳定在线 ≥ FNX_STABLE_SEC 秒（默认 1800=30min）再无崩溃
+#   → 计数清零。故第 1、2 次崩溃都带档自愈拉起，第 3 次起剥档；剥档后若稳定跑满
+#   30min，下一次崩溃链重新从"带档"算起——最多用 2 次崩溃的代价重新试探档位可用性，
+#   属策略内可接受的振荡。
+CRASH_N=/tmp/fnx-watchdog-crash-n
+CRASH_AT=/tmp/fnx-watchdog-crash-at
+CRASH_STRIP_AFTER=${CRASH_STRIP_AFTER:-3}
+STABLE_SEC=${FNX_STABLE_SEC:-1800}
+read_counter(){ local v; v=$(cat "$1" 2>/dev/null || echo 0); case "$v" in ''|*[!0-9]*) v=0;; esac; echo "$v"; }
 NVSMI=/usr/bin/nvidia-smi
-BASE_NEW=/home/ll/deploy/vllm-0300
+# [stack-0310-1006] 栈阶梯：0.31.0（vllm-0310）→ chroot 旧栈（vllm-0310/DISABLED 在位时）
+BASE_NEW=/home/ll/deploy/vllm-0310
+BASE_MID=/home/ll/deploy/vllm-0300
 STACK_DISABLED=0
-[ -f "$BASE_NEW/DISABLED" ] && STACK_DISABLED=1
+if [ ! -x "$BASE_NEW/start-flash-next-0310.sh" ] || [ -f "$BASE_NEW/DISABLED" ]; then
+  STACK_DISABLED=1
+fi
 if [ "$STACK_DISABLED" = "0" ]; then
-  START_SCRIPT=$BASE_NEW/start-flash-next-0300.sh
-  STOP_SCRIPT=$BASE_NEW/stop-flash-next-0300.sh
+  START_SCRIPT=$BASE_NEW/start-flash-next-0310.sh
+  STOP_SCRIPT=$BASE_NEW/stop-flash-next-0310.sh
   ENVF=$BASE_NEW/launch.env
+  INNER_PAT='flash-next-0310-inner.sh'
+elif [ -x "$BASE_MID/start-flash-next-0300.sh" ] && [ ! -f "$BASE_MID/DISABLED" ]; then
+  START_SCRIPT=$BASE_MID/start-flash-next-0300.sh
+  STOP_SCRIPT=$BASE_MID/stop-flash-next-0300.sh
+  ENVF=$BASE_MID/launch.env
   INNER_PAT='flash-next-0300-inner.sh'
 else
   START_SCRIPT=/home/ll/deploy/start-flash-next-w4a16.sh
@@ -38,7 +78,7 @@ fi
 # 这样回滚/换栈后卡死取证不必再改脚本（旧版写死 w4a16.log，换栈即哑）。
 pick_log(){
   local best="" bt=0 f t
-  for f in /home/ll/deploy/vllm-flash-next-0300.log /home/ll/deploy/vllm-flash-next-w4a16.log; do
+  for f in /home/ll/deploy/vllm-flash-next-0310.log /home/ll/deploy/vllm-flash-next-0300.log /home/ll/deploy/vllm-flash-next-w4a16.log; do
     [ -f "$f" ] || continue
     t=$(stat -c %Y "$f" 2>/dev/null || echo 0)
     [ "$t" -gt "$bt" ] && { bt=$t; best=$f; }
@@ -112,7 +152,7 @@ vllm_alive(){
   done
   return 1
 }
-inner_alive(){ ps -eo args= 2>/dev/null | grep -qE "[f]lash-next-(0300|w4a16)-inner\.sh"; }
+inner_alive(){ ps -eo args= 2>/dev/null | grep -qE "[f]lash-next-(0310|0300|w4a16)-inner\.sh"; }
 
 code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "http://127.0.0.1:${PORT}/health" 2>/dev/null)
 [ -z "$code" ] && code=000
@@ -143,10 +183,10 @@ if [ "$code" = "200" ] || vllm_alive; then
       for p in $(ps -eo pid,comm= 2>/dev/null | awk '/VLLM::(Worker|EngineCore)/ {print $1}'); do
         n=$(ps -o comm= -p "$p" 2>/dev/null | tr -d ':')
         f="$DD/stall-$(date +%m%d-%H%M%S)-$p-$n.txt"
-        if command -v py-spy >/dev/null 2>&1; then
+        if [ "$HAVE_SUDO_PW" = "1" ] && command -v py-spy >/dev/null 2>&1; then
           # worker 属 root（chroot 实例），裸 py-spy 报 Permission Denied 只落 99 字节空壳；
           # sudo 又会重置 PATH，必须 env "PATH=$PATH" 才找得到 ~/.local/bin/py-spy（09-24 实锤）
-          echo "${SUDO_PASS:?本副本已脱敏：先 export SUDO_PASS=<部署机 sudo 口令>}" | sudo -S -p '' env "PATH=$PATH" py-spy dump --pid "$p" > "$f" 2>&1
+          sudo_run env "PATH=$PATH" py-spy dump --pid "$p" > "$f" 2>&1
         else
           { echo "=== py-spy 不可用，退化为 /proc 取证 ==="
             echo "--- threads: tid comm wchan state ---"
@@ -159,7 +199,7 @@ if [ "$code" = "200" ] || vllm_alive; then
         fi
         # 补丁5：附内核栈与 wchan（py-spy 只见 Python 帧，native 阻塞点看这里）
         { echo "--- kernel stack ---"
-          echo "${SUDO_PASS:?本副本已脱敏：先 export SUDO_PASS=<部署机 sudo 口令>}" | sudo -S -p '' cat /proc/$p/stack 2>/dev/null
+          [ "$HAVE_SUDO_PW" = "1" ] && sudo_run cat /proc/$p/stack 2>/dev/null
           echo "--- wchan ---"; cat /proc/$p/wchan 2>/dev/null; echo
         } >> "$f"
         [ -s "$f" ] && log "卡死取证: pid=$p -> $(basename "$f")（$(wc -c < "$f") 字节）"
@@ -169,6 +209,17 @@ if [ "$code" = "200" ] || vllm_alive; then
     rm -f "$STALL_MARK"
   fi
   if [ -f "$STATE" ]; then log "health=200 恢复，清零失败计数"; rm -f "$STATE"; fi
+  # [tier-keep-1010] 崩溃链断裂：自上次看门狗拉起（或既有记录）起稳定在线 ≥ STABLE_SEC 秒
+  # → 清零连续崩溃计数，下一次崩溃恢复"第 1 次=带档拉起"语义。
+  cn=$(read_counter "$CRASH_N")
+  if [ "$cn" -gt 0 ]; then
+    cat_=$(read_counter "$CRASH_AT")
+    now_s=$(date +%s)
+    if [ "$cat_" -eq 0 ] || [ $((now_s - cat_)) -ge "$STABLE_SEC" ]; then
+      echo 0 > "$CRASH_N"
+      log "实例已稳定在线（距上次拉起 $((now_s - cat_)) 秒 ≥ ${STABLE_SEC}s），连续崩溃计数清零（原 $cn）[tier-keep-1010]"
+    fi
+  fi
   exit 0
 fi
 
@@ -210,11 +261,25 @@ else
   export FN_MAXLEN=1048576 FN_GPUMEM=0.95 FN_SEQS=4 FN_MBTOKENS=8192 FN_BLOCK=1616
   export FN_SPEC="{\"method\":\"mtp\",\"num_speculative_tokens\":4,\"use_local_argmax_reduction\":false}" FN_ASYNC=1
   # 新栈无 PLE 精度/位置与 KVOFF 档位（0.30.0 只有 BF16 锁页；传了会触发 inner 的忽略告警）
-  [ "$STACK_DISABLED" = "1" ] && export FN_PLE_INT8=1 FN_PLE_LOC=disk FN_KVOFF=0
+  [ "$STACK_DISABLED" = "1" ] && export FN_PLE_INT8=0 FN_PLE_LOC=disk FN_KVOFF=0  # [w4a16-restore-1006] W4A16 INT8 产物未生成→回退档也走 BF16 磁盘驻留
   export FN_SERVED=qwen3.8-flash-next FN_PORT=18420
 fi
-selfheal_sanitize
-[ -n "$TIER_DROPPED" ] && log "自愈安全模式：已剥离内存二级缓存档位[$TIER_DROPPED]，按无二级缓存定版拉起"
+# [tier-keep-1010] 连续崩溃计数与剥档决策：本次拉起 = 第 cn 次连续崩溃。
+# cn < CRASH_STRIP_AFTER → 保留二级缓存档原样重放 launch.env；
+# cn ≥ CRASH_STRIP_AFTER → 走原安全模式剥档（防"崩溃→带档重启→再崩"无限循环）。
+cn=$(( $(read_counter "$CRASH_N") + 1 ))
+echo "$cn" > "$CRASH_N"; date +%s > "$CRASH_AT"
+if [ "$cn" -lt "$CRASH_STRIP_AFTER" ]; then
+  TIER_DROPPED=""
+  log "连续崩溃第 $cn/$CRASH_STRIP_AFTER 次 -> 保留内存二级缓存档，按 launch.env 原样拉起"
+else
+  selfheal_sanitize
+  if [ -n "$TIER_DROPPED" ]; then
+    log "连续崩溃第 $cn 次（≥$CRASH_STRIP_AFTER）-> 自愈安全模式：已剥离内存二级缓存档位[$TIER_DROPPED]，按无二级缓存定版拉起"
+  else
+    log "连续崩溃第 $cn 次（≥$CRASH_STRIP_AFTER）-> 剥档条件达成，但当前参数本无二级缓存档，按原样拉起"
+  fi
+fi
 rm -f "$MANUAL_STOP"   # 本看门狗的拉起意图优先于闩锁（前面"清残留"调 stop 脚本会置闩）
 setsid nohup bash "$START_SCRIPT" >> "$LAUNCH_LOG" 2>&1 < /dev/null &
 rm -f "$STATE"
