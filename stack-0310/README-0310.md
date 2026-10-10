@@ -73,13 +73,16 @@ echo <部署机 sudo 口令>|sudo -S -p '' dmesg | grep -c Xid                  
 | **4 并发吞吐**（seqs 2→4 后，空载实测 4×300 token） | **聚合 257.8 tok/s**，单流 64.5~68.8 tok/s（几乎不掉速）；FULL CUDA 图从捕获 2 个尺寸变 **3 个（bs=1,2,4）**；MTP 平均接受长度 4.66 |
 | 加压连测（20:22~20:33，3 轮挤池各 1,579,107 token） | **3/3 VERDICT=1**：每轮 `external_hits` 增量 **59,792**、`cached=94.9%`、验证码逐字命中；累计 `ext_hits=877,488 token`、`load_blocks=563`、`save_outcomes(stored)=272`、`pending_store` 稳定在 15（不增长＝无卡死传输）、`Xid=0`、`dsegv=dengine_err=0` |
 
-## 5. 参数真值与三源同步
-`launch.env` ＝ 8889 `SCRIPT_MODELS['qwen3.8-flash-next-w4a16'].base` ＝ 快启预设
-`current-pp3-1m-mtp4-int8disk-32g`（显示名「当前固化-双卡PP2-1M-MTP4-**二级缓存96G**…」）。
-要点：`FN_PP=2`（本机在位 2 卡，`lspci -d 10de:` 数卡）、`FN_SIMPLE_OFFLOAD=96`、
-`FN_PLE_MMAP=1` + `FN_PLE_INT8_DIR=/media/ll/data/ple`、**`FN_SEQS=4`**（10-06 20:53 按用户指定从 2 调到 4，聚合吞吐 257.8 tok/s）、采样仍是复刻当轮的裸档
-`t1.0/top_p0.95/top_k20/min_p0/presence0/repetition1.0`（反循环定档是 0.6/0.95/20/0/0.2/1.15，
-如复发言题三源一起改，见 `docs/08` P46/P62）。
+## 5. 参数真值与三源同步（10-10 与生产实测逐字节对齐）
+`launch.env` ＝ 8889 `SCRIPT_MODELS['qwen3.8-flash-next-w4a16'].base`（`modelVariants` 按 checkpoint 分派模型路径/1M 副本/PLE 表目录/PP 下限）＝ 快启预设 `w8a8-pp3-1m-mtp4`。
+当前生产真值（本仓库 `launch.env` 的 md5 与机器上那份一致）：
+模型 `Qwen3.8-Flash-Next-Channel-INT8-w8a8`（1M 副本 `models-1m/…-1M`）、`FN_PP=3`（本机在位 3 卡）、`FN_TP=1`、
+`FN_BLOCK=1616`、`FN_MAXLEN=1048576` + `FN_YARN_FACTOR=4`、**`FN_SEQS=4`**、`FN_GPUMEM=0.95`、`FN_MBTOKENS=8192`、
+`FN_SIMPLE_OFFLOAD=96`、`FN_KVOFF=0`、`FN_SPEC=mtp×4`、
+**`FN_PLE_INT8=1` + `FN_PLE_LOC=heap` + `FN_PLE_INT8_DIR=/media/ll/data/ple-w8a8`**（PLE 驻留四档见 §8）。
+采样真值＝inner 的 `GENCFG_DEFAULT`（launch.env 不带 `FN_GENCFG` 即沿用）：
+`t0.6/top_p0.95/top_k20/min_p0/presence0.2/repetition1.15`（10-01 反循环加固档，沿革见 `docs/08` P46/P62）。
+改任何一项三处齐改；重启后终验读 `/proc/<APIServer pid>/cmdline`（10-01 实锤过「文件都对但运行时不同」的 envfile 竞写）。
 
 ## 6. 回滚阶梯
 ```bash
@@ -100,3 +103,23 @@ echo <部署机 sudo 口令>|sudo -S -p '' dmesg | grep -c Xid                  
    ⇒ 每个进程启动多一行 `[rt-patch-extra] dsh_kvoff_rt 加载失败…` 的**无害**告警。
 4. 二级缓存的收益边界不变：只有「前缀被挤出 GPU 池（121 万 token）之后又被重发」才吃到；
    历史 21.5 h 观测里 GPU 池自扛 ~90% 命中、外档命中为 0。
+
+## 8. PLE n-gram 表驻留四档与「内存·匿名堆」（10-10 上线，生产档=第 2 行）
+控制台「PLE 表驻留」卡的值来自引擎日志判据行（显示即真值），不是配置文件。四档与内存记账：
+
+| 弹窗（精度 / 位置） | inner 推导出的 env | 引擎实现 | 体积 | `free` 里算在哪 |
+|---|---|---|---|---|
+| INT8 / 放硬盘 | `DSH_PLE_MMAP=1` + `DSH_PLE_MMAP_LOCK=1` | mmap 产物文件（mlock 的是**文件页**） | 47.7+0.6 GiB | **buff/cache**（仍可被回收） |
+| **INT8 / 放内存**（生产） | `DSH_PLE_MMAP=1` + `DSH_PLE_MEM_RESIDENT=1` | **私有匿名堆**：`np.empty` + 并行 `os.pread` 分块读入 | 47.7+0.6 GiB | **已用**（不可回收）✅ |
+| BF16 / 放内存 | `FN_PLE_MMAP=0` | 官方 pinned-host（`cuMemHostRegister`，要 root+memlock） | 95.4 GiB | 已用（且不可换出） |
+| 显存 | — | 官方 device 驻留 | — | 显存 |
+
+要点：
+1. **mlock 的文件页仍算 buff/cache**，只有私有匿名页算「已用」。所以「PLE 表要体现在内存已用量」的正解是走匿名堆档，而不是给 mmap 加锁——这是本档存在的全部理由。
+2. 判据日志（缺一行就是没吃到该档）：
+   `[FN-PLE] INT8 内存驻留（匿名堆）：…（47.7+0.6 GiB，不可回收、计入已用）`、
+   `[rt-patch-0310] PLE anon-heap storage attached: 47.7 GiB … (resident, non-reclaimable)`、
+   引擎侧 `Initialized PLE embedding … weight_dtype=torch.int8, weight_device=cpu, pinned=False`。
+3. 首跑必崩已修（`docs/08` **P71**）：`memoryview(arr.data)` 继承调用方的 2-D 形状 ⇒ 切片赋值 `NotImplementedError: memoryview slice assignments are currently restricted to ndim = 1`；正解 `memoryview(arr).cast("B")`。重打件 `tools/patch-anonple-memview-1010.py`（幂等、`--revert` 可撤、自带 2-D/1-D 逐字节自检，须用 venv 的 python 跑）。
+4. 内存账（251 GiB 机，10-10 实测）：PLE 匿名 48.3 + SimpleCPU 96 GiB pinned + 引擎 ~12 ≈ **已用 156 GiB**，buff/cache 只剩 ~2.7 GiB ⇒ 权重页缓存被挤光，下次重启多付 ~57 s 权重加载。内存告警第一刀仍是 `FN_SIMPLE_OFFLOAD=48`。
+5. 控制台侧 `server.js` 的 `matchPleLine` 已认 `PLE anon-heap storage attached` / `[FN-PLE] INT8 内存驻留` 两类新行；**改完必须 `systemctl --user restart dsh-console`**——10-10 实锤：磁盘文件已更新但进程还是旧的，卡片一直显示旧驻留档（`docs/08` **P70**）。
