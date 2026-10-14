@@ -22,7 +22,9 @@ stack-0310/
 ├─ stop-flash-next-0310.sh             # 按端口优雅停（SIGTERM 90s 后才兜底；僵尸不计存活）
 ├─ launch.env                          # 生产参数真值（与 8889 base/预设三源同步）
 ├─ patches/sitecustomize.py            # 上游 8+2 钩（0.31.0 版，含 hook8/hook10 与 DSH_PLE_MMAP）
-├─ patches-extra/{sitecustomize,dsh_simple_offload_rt}.py   # rt-patch #11/#13（逐块拷贝+握手 clamp）
+├─ patches-extra/{sitecustomize,dsh_simple_offload_rt,dsh_stream_rt,dsh_extcache_rt,selftest_extcache_rt}.py
+│       # rt-patch #11（每请求输出真值流）/ #13（逐块拷贝+握手 clamp）/ #14（load 跨流 WAR 同步，10-10）
+│       # / #12（每请求二级缓存命中真值 → vllm-ext-cache.jsonl，10-07）
 └─ selftest_simple_rt_v13.py           # 13 用例离线自检（含"故意破坏必须被抓"金丝雀）
 ```
 > 本副本对 `start/stop/探针` 做了 **sudo 口令脱敏**（改走 `SUDO_PASS` 环境变量），与生产机逐字节不同属预期；
@@ -41,7 +43,7 @@ python3 scripts/quantize_ple.py --model /media/ll/data/models/Qwen3.8-Flash-Next
 #    期望末两行：[verify] 抽样 100000 行：字节不一致=0 relMSE=4.360e-05 行余弦均值=0.9999784 / [done] …
 # ④ 自检 rt-patch #13 对新版本仍生效（期望 PASS=13 FAIL=0）
 cd stack-0310 && /media/ll/data/vllm-0310-env/bin/python selftest_simple_rt_v13.py
-# ⑤ 预演 argv（不碰 GPU）：期望 max-model-len 1048576 / --kv-offloading-size 96 / PP2 / block 1616
+# ⑤ 预演 argv（不碰 GPU）：期望 max-model-len 1048576 / --kv-offloading-size 160 / PP3 / block 1616
 set -a; . launch.env; set +a; FN_DRY_RUN=1 bash bin/flash-next-0310-inner.sh
 # ⑥ 实启（必须 root；PLE 锁页/注册要 memlock 不限）
 set -a; . launch.env; set +a; bash start-flash-next-0310.sh
@@ -53,7 +55,7 @@ set -a; . launch.env; set +a; bash start-flash-next-0310.sh
 L=/home/ll/deploy/vllm-flash-next-0310.log
 grep -a "Initializing a V1 LLM engine" $L | tail -1        # 期望含 v0.31.0 与 models-1m/…-1M
 grep -aE "SimpleCPUOffloadWorker \[CPU\]" $L | tail -2      # 期望两 rank ≈2157/2224 块、各 ≈48 GiB
-grep -a "握手 clamp" $L | tail -1                            # 期望「2224 -> 2157（对齐最窄 worker，防 PP 越界）」
+grep -a "握手 clamp" $L | tail -1                            # 期望「4194 -> 3355（对齐最窄 worker，防 PP 越界）」（PP3+160GiB 现档；PP2+96GiB 历史值为 2224 -> 2157）
 grep -a "GPU KV cache size" $L | tail -1                     # 期望 1,210,374 tokens / 1M 并发 1.15x
 curl -s :18420/metrics | grep -a kv_cache_size_tokens        # 与上行一致
 echo <部署机 sudo 口令>|sudo -S -p '' dmesg | grep -c Xid                  # 期望 0（本次全程）
@@ -73,15 +75,15 @@ echo <部署机 sudo 口令>|sudo -S -p '' dmesg | grep -c Xid                  
 | **4 并发吞吐**（seqs 2→4 后，空载实测 4×300 token） | **聚合 257.8 tok/s**，单流 64.5~68.8 tok/s（几乎不掉速）；FULL CUDA 图从捕获 2 个尺寸变 **3 个（bs=1,2,4）**；MTP 平均接受长度 4.66 |
 | 加压连测（20:22~20:33，3 轮挤池各 1,579,107 token） | **3/3 VERDICT=1**：每轮 `external_hits` 增量 **59,792**、`cached=94.9%`、验证码逐字命中；累计 `ext_hits=877,488 token`、`load_blocks=563`、`save_outcomes(stored)=272`、`pending_store` 稳定在 15（不增长＝无卡死传输）、`Xid=0`、`dsegv=dengine_err=0` |
 
-## 5. 参数真值与三源同步（10-10 与生产实测逐字节对齐）
+## 5. 参数真值与三源同步（10-14 与生产实测逐字节对齐）
 `launch.env` ＝ 8889 `SCRIPT_MODELS['qwen3.8-flash-next-w4a16'].base`（`modelVariants` 按 checkpoint 分派模型路径/1M 副本/PLE 表目录/PP 下限）＝ 快启预设 `w8a8-pp3-1m-mtp4`。
 当前生产真值（本仓库 `launch.env` 的 md5 与机器上那份一致）：
 模型 `Qwen3.8-Flash-Next-Channel-INT8-w8a8`（1M 副本 `models-1m/…-1M`）、`FN_PP=3`（本机在位 3 卡）、`FN_TP=1`、
-`FN_BLOCK=1616`、`FN_MAXLEN=1048576` + `FN_YARN_FACTOR=4`、**`FN_SEQS=4`**、`FN_GPUMEM=0.95`、`FN_MBTOKENS=8192`、
-`FN_SIMPLE_OFFLOAD=96`、`FN_KVOFF=0`、`FN_SPEC=mtp×4`、
+`FN_BLOCK=1616`、`FN_MAXLEN=1048576` + `FN_YARN_FACTOR=4`、**`FN_SEQS=4`**、`FN_GPUMEM=0.95`（inner 内置缺省 10-13 起为 **0.90**，envfile 显式 0.95 覆盖；手动裸启=保守 0.90 档）、`FN_MBTOKENS=8192`、
+**`FN_SIMPLE_OFFLOAD=160`**（10-10 起；PP3 clamp 4194→3355，CPU 档 ≈542 万 tok ≈5.1× GPU 池）、`FN_KVOFF=0`、`FN_SPEC=mtp×4`、
 **`FN_PLE_INT8=1` + `FN_PLE_LOC=heap` + `FN_PLE_INT8_DIR=/media/ll/data/ple-w8a8`**（PLE 驻留四档见 §8）。
-采样真值＝inner 的 `GENCFG_DEFAULT`（launch.env 不带 `FN_GENCFG` 即沿用）：
-`t0.6/top_p0.95/top_k20/min_p0/presence0.2/repetition1.15`（10-01 反循环加固档，沿革见 `docs/08` P46/P62）。
+采样真值＝launch.env `FN_GENCFG`（10-13 定档，显式下发）：
+`t0.6/top_p0.95/top_k20/min_p0/presence0/repetition1`（运行 cmdline `--override-generation-config` 实测一致；沿革见 `docs/08` P46/P62 与 CHANGELOG 10-10）。
 改任何一项三处齐改；重启后终验读 `/proc/<APIServer pid>/cmdline`（10-01 实锤过「文件都对但运行时不同」的 envfile 竞写）。
 
 ## 6. 回滚阶梯
@@ -94,15 +96,17 @@ echo <部署机 sudo 口令>|sudo -S -p '' dmesg | grep -c Xid                  
 内存档回退第一刀：`FN_SIMPLE_OFFLOAD=48`（本机 251 GiB 内存、有 MCE 硬挂史）。
 
 ## 7. 已知风险与未验证清单（如实）
-1. **soak 仍在计时**：历史病灶（P59~P61）发生在带 96 GiB 档就绪后 26~71 分钟。#13 clamp 已确认生效
-   （日志有 clamp 行），但 **≥6 小时无 segfault 才算稳**；看护件 `tools/soak-0310-monitor.sh`
-   → `/home/ll/deploy/soak-0310.log`（每 5 分钟一行：health/segv/ext_hits/xid/内存）。
+1. **soak 已过（10-14 复核）**：当前生产实例（10-13 18:19 起，PP3 + 160GiB 带档 + #13/#14）连续运行
+   **25 h 51 m：Segfault 计数 0、实例存活期内零新增 Xid、`external_prefix_cache` 命中率 94.8%**
+   （hits 19.9 亿 / queries 21.0 亿，二级缓存已成为生产命中的主力承载层）。历史病灶（P59~P61 的
+   26~71 分钟窗口）与 10-10 定位的 load 路径 Xid13（P72，#14 修复）均越过。看护件
+   `tools/soak-0310-monitor.sh` 长期在位（`/home/ll/deploy/soak-0310.log`）。
 2. `DSH_PLE_MMAP` 的 mmap-INT8 查表路径在 **0.31 上首跑**：标点/内容探针与验证码已过（§4），
    但长文与多并发下的 PLE 命中质量仍需日常观察（症状指纹=「内容词对、标点乱」→ 立即 `FN_PLE_MMAP=0`）。
 3. `patches-extra/sitecustomize.py` 仍尝试 `import dsh_kvoff_rt`（经典连接器移植件，本栈刻意不放）
    ⇒ 每个进程启动多一行 `[rt-patch-extra] dsh_kvoff_rt 加载失败…` 的**无害**告警。
-4. 二级缓存的收益边界不变：只有「前缀被挤出 GPU 池（121 万 token）之后又被重发」才吃到；
-   历史 21.5 h 观测里 GPU 池自扛 ~90% 命中、外档命中为 0。
+4. 二级缓存收益边界已改写（10-14）：旧结论「GPU 池自扛 ~90%、外档命中 0」是**小档时代**的观测；
+   160GiB 档（5.1× GPU 池）下外档命中占比 94.8%，长前缀重发的预填充时间主要由 CPU 档承担。
 
 ## 8. PLE n-gram 表驻留四档与「内存·匿名堆」（10-10 上线，生产档=第 2 行）
 控制台「PLE 表驻留」卡的值来自引擎日志判据行（显示即真值），不是配置文件。四档与内存记账：

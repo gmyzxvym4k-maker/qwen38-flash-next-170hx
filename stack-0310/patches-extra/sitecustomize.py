@@ -161,6 +161,23 @@ except Exception as _stexc:  # 加载失败绝不拖垮启动，但必须出声
     _log(f"dsh_stream_rt 加载失败（每请求输出真值流未激活，并发卡速度回落估算）：{_stexc}")
 
 
+# --------------------------------------------------------------------------
+# rt-patch #12：每请求「二级缓存（CPU KV offload）命中」真值（2026-10-07）
+# 挂 vllm.v1.request（官方摘取 PrefillStats 的一瞬记 local/external 分项）+
+# 具体调度器类 Scheduler 与抽象 SchedulerInterface（完成信号）。落盘
+# vllm-ext-cache.jsonl → 控制台按 rid join 到「最近完成请求」的 二级缓存命中 列。
+# ⚠ 两处历史坑（本仓 10-07 连抓两 bug）：① 官方 Scheduler 自定义 update_from_output
+#   会遮蔽接口那份，必须给具体类单独挂；② 幂等判据只能用 cls.__dict__，用 getattr
+#   会从基类继承到标记位从而静默跳过子类。紧急回退：DSH_EXTCACHE_RT_DISABLE=1。
+# --------------------------------------------------------------------------
+try:
+    import dsh_extcache_rt
+
+    _PATCHES.update(dsh_extcache_rt.PATCHES)
+except Exception as _xcexc:  # 加载失败绝不拖垮启动，但必须出声
+    _log(f"dsh_extcache_rt 加载失败（每请求二级缓存命中列无数据）：{_xcexc}")
+
+
 # 幂等哨兵：用 sys 模块属性，**不要用环境变量** —— 环境变量会被 vLLM 的 mp 子进程
 # 继承，子进程会误判"已加载"而跳过挂载（09-30 启动日志实测子进程打 "哨兵命中"）。
 # sys 属性每进程独立：父进程挂一次、每个子进程各挂一次，语义正确（将来若加 worker

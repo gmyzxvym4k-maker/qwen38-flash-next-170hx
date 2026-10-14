@@ -623,6 +623,40 @@ server.js base/模型目录/`pleInt8Dir`+plan 下发、两预设、wrapper `RA_L
 2-D 大数组逐字节比对、1-D 档比对、确认目标确实是匿名缓冲；
 且**必须用推理 venv 的 python 跑自检**（系统 `python3` 无 numpy，会给出假失败）。
 
+### P72 二级缓存 load 路径的间歇 Xid13：DMA 写与 compute 读并发踩「刚复用」的 GPU 块（2026-10-10，rt-patch #14 修复）
+
+带 160GiB 档实例出现间歇性 `Xid 13 (Graphics SM Warp Exception: Out Of Range Address)` + `Xid 43`，
+现场恒在**最后一个 PP stage**，Python 侧常复读在 `copy_event.synchronize()`。
+根因不在地址合法性（#13 的池 clamp/越界守卫只封「写到池外」）：上游 `start_load_kv` 把
+CPU→GPU DMA 直接扔上 load_stream，**不等待 compute stream**——刚结束请求的 GPU 块被释放后
+立即复用给新 load 时，先前排队的 compute kernel（典型为 MTP 投机步）可能仍在读这些块，
+被读作索引/元数据的行拿到半新半旧垃圾 → 后续 kernel 越界。
+上游 issue #59768（RTX PRO 6000）与 #47282 两份独立报告同机制；官方 PR #60078/#47324 **均未合并**，
+故 0.31.0 仍带此病。
+正解（rt-patch #14，`dsh_simple_offload_rt.py`）：提交 load 前在 compute stream 上 record 一个
+**专用** event（勿复用 store 的 `_store_compute_done`——两提交点在不同函数，复用会 re-record 漂移），
+作为 `wait_event` 交给 copy 线程 ⇒ load_stream 先等 compute 排空再 DMA，与 store 路径
+`wait_for_save` 的 compute-done 屏障对称。开关 `DSH_SIMPLE_WAR_SYNC=0`（仅取证，会复崩）。
+判据日志：`[dsh-simple-rt] worker.start_load_kv：#14 WAR 跨流同步钩子已挂`（每 rank 一条）。
+验证：10-13 18:19 起带 160GiB 档连续 25 h+ 零 segfault、实例期零新增 Xid、外档命中率 94.8%。
+
+### P73 rt-patch 给「Scheduler」挂钩子的两个静默失效坑（2026-10-07，rt-patch #12 连抓两次）
+
+做每请求二级缓存命中真值（`dsh_extcache_rt.py` → `vllm-ext-cache.jsonl`）时：
+① 官方 `Scheduler` 类**自定义**了 `update_from_output`，会遮蔽 `SchedulerInterface` 上那份——
+只包接口类则调度器进程永不命中，必须给具体类单独挂；
+② 幂等判据只能用 `cls.__dict__`（本类是否定义），用 `getattr` 会从基类**继承**到标记位，
+导致子类被静默跳过（症状=钩子"已装"但零数据）。
+紧急回退：`DSH_EXTCACHE_RT_DISABLE=1`。判据日志：`[rt-patch-extcache] Scheduler.update_from_output 已挂钩`。
+
+### P74 仓库引用了未入库的补丁本体：克隆件在生产机上「差一个文件」（2026-10-14 归档时发现）
+
+`stack-0310/patches-extra/sitecustomize.py` 一直 `import dsh_stream_rt`，但仓库里从未收过
+`dsh_stream_rt.py` 本体（rt-patch #11 落库时漏了）——生产机能跑是因为文件在机器上，
+按仓库克隆复现的人会收到 `[rt-patch-extra] dsh_stream_rt 加载失败…` 告警、并发卡速度静默回落估算。
+教训：交付前对补丁装载器做**引用扫描**（grep `import dsh_` 与目录清单对账），
+与 P58「.gitignore 吞交付件」同族——只扫工作区状态发现不了"引用在、本体缺"。
+
 ---
 
 ## 附：已验证走不通的死路（别再试）

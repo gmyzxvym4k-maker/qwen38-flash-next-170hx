@@ -1,23 +1,19 @@
 # Qwen3.8-Flash-Next（W4A16-AutoRound）在 2× CMP 170HX 上的 vLLM 部署：可复现手册
 
-> ✅ **2026-10-06 晚（当前生产）：18420 = 官方 vLLM 0.31.0 运行时补丁栈 + 「二级缓存·CPU」96 GiB 已开**——PP2 + MTP4 + 1M(YaRN×4) + PLE INT8 磁盘 mmap。挤池 143 万 token 后重发 55,924-token 文档 → **95.4%（53,328 token）由内存档回载**、验证码逐字无损、Xid=0。
-> 复刻入口 [`stack-0310/`](stack-0310/README-0310.md)（含从零七步、验收期望值、回滚阶梯）；路由哨兵已改判 `vllm-0310/DISABLED`。
+> ✅ **2026-10-14（当前生产）＝二级缓存稳定版：18420 = 官方 vLLM 0.31.0 运行时补丁栈 + 「KV 二级缓存·CPU」160 GiB 常开**
+> ——PP3（3× CMP 170HX）+ MTP4 + 1M(YaRN×4) + PLE INT8 内存·匿名堆。rt-patch **#13**（握手 clamp，封 P61 越界 segfault）
+> + **#14**（load 跨流 WAR 同步，封间歇 Xid13/43，上游 PR #60078/#47324 未合并）把二级缓存两条崩溃路径全部闭环：
+> 当前实例连续 **25 h 51 m 零 segfault、实例期零新增 Xid**，`external_prefix_cache` 命中率 **94.8%**
+> （CPU 档已成为长前缀命中的主力承载层）。**复刻入口 [`stack-0310/`](stack-0310/README-0310.md)**
+> （从零七步、验收期望值、回滚阶梯；路由哨兵=`vllm-0310/DISABLED`，touch 即退回 chroot 旧栈）。
 >
 > 这是一套**已经在生产上跑着的**服务的完整复刻件：推理端点 `http://<部署机>:18420/v1`，
 > 模型 `qwen3.8-flash-next`（176B 总参 / 约 6B 激活的 MoE + PLE n-gram 嵌入 + GDN 线性注意力混合架构），
-> 跑在两张 64 GB 的 **NVIDIA CMP 170HX**（GA100 die，SM80，矿卡解锁）上，用 **PP2 + MTP4**，
-> 上下文 **1M token**，decode 稳态 **90~130 tok/s**，前缀缓存命中率 **89~91%**。
+> 跑在 64 GB 的 **NVIDIA CMP 170HX**（GA100 die，SM80，矿卡解锁）×3 上，用 **PP3 + MTP4**，
+> 上下文 **1M token**，decode 稳态 **90~130 tok/s**，前缀缓存（本地+二级）合计命中 **~95%**。
 >
-> **当前生产 = 官方 vLLM 0.30.0 运行时补丁栈，并已开启「KV 缓存内存二级层」
-> （GPU 显存 → 宿主内存 96 GiB，`SimpleCPUOffloadConnector`，实测被挤出显存的前缀 80~97% 由内存档回载）**——
-> 复刻入口 [`stack-0300/`](stack-0300/README.md)，权威文档 [`stack-0300/README-0300.md`](stack-0300/README-0300.md) **§11 生产定版**。
->
-> 🔄 **2026-10-03 生产栈再切换：现行 18420 = SGLang 0.5.21**（PP2 + NEXTN 投机，
-> 定长实测 **118 tok/s**，高于 vLLM 栈 MTP4 ~90；验收全绿，看门狗已切 sglang 自愈）。
-> **复现现行生产请看 [`stack-sglang/`](stack-sglang/README.md)**（启动件、5 个运行时补丁、
-> 9 个必踩坑：权重翻倍泄漏 gc 修复 / NEXTN draft 必须 `--speculative-draft-model-quantization unquant` /
-> FA2 编译 / tilelang cccl 旁路等）。官方 vLLM 0.30.0 栈（下文 §1~§11 与 `stack-0300/`）**保留为回滚路径**，
-> 两套栈的启停与看门狗互斥（同一时刻只跑一套）。
+> 历史窗口存档（回滚/对照用）：[`stack-0300/`](stack-0300/README.md)（0.30.0 栈生产定版，README-0300.md §11）、
+> [`stack-sglang/`](stack-sglang/README.md)（2026-10-03 SGLang 0.5.21 窗口）。
 >
 > ⏪ **2026-10-03 晚：生产栈按用户指令切回官方 vLLM 0.30.0**（SGLang 实例已停、
 > `fnx-sglang-watchdog.timer` 已 disable、`fnx-18420-watchdog.timer` 已 enable，闩锁清除）。
@@ -34,8 +30,9 @@
 >
 > ✅ **复读（循环输出）问题已解决**：09-19→10-01 四轮采样调档 + 归因，定性为三层因果链
 > （会话上下文污染＝直接触发；1M×xhigh×PLE 数值退化边缘＝土壤；SM74 回收补丁＝历史放大器）。
-> 生产定档（10-03 夜最终） **temperature 0.7 / top_p 0.95 / top_k 20 / min_p 0 /
-> presence_penalty 0 / repetition_penalty 1.15**（0.6 系为过渡档，同族皆可；唯忌 t≤0.3 与裸 1.0/0/1.0），
+> 生产定档（**10-13 终版，launch.env `FN_GENCFG` 显式下发**） **temperature 0.6 / top_p 0.95 / top_k 20 /
+> min_p 0 / presence_penalty 0 / repetition_penalty 1**（沿革：10-03 夜 0.7/1.15 → 10-10 用户拍板裸档 1/0/1 →
+> 10-13 收敛为本档；运行判据=`/proc/<APIServer pid>/cmdline` 的 `--override-generation-config`），
 > 并确立「采样参数四源同步 + `/proc/<pid>/cmdline` 终验」纪律。
 > **复刻必读**：完整档位演变、五条防复读配置清单、已排除项 →
 > [`docs/08-pitfalls.md` 第九节 P62](docs/08-pitfalls.md)。
@@ -69,7 +66,7 @@ Qwen3.8-Flash-Next 不是普通 Transformer，它有三处"常规 vLLM 配方会
 
 ---
 
-## 1. 当前生产形态：官方 vLLM 0.30.0 + 内存二级缓存（2026-09-26 起）
+## 1. 历史窗口：官方 vLLM 0.30.0 + 内存二级缓存（2026-09-26~10-06，现保留为回滚路径）
 
 ```
 客户端 ──OpenAI 兼容 API──► :18420 (host 0.0.0.0)
@@ -120,15 +117,15 @@ Qwen3.8-Flash-Next 不是普通 Transformer，它有三处"常规 vLLM 配方会
   按自己流量画像决定。
 - **踩坑全录**（c1~c11 三轮攻关：假 0 命中、pending 悬挂、容量口径勘误、mamba 竞态、拷贝 API 冻结流…）：
   [`stack-0300/README-0300.md` §6.1~6.3](stack-0300/README-0300.md) + ROUND1/2/3 文档。
-- **segfault 根因定案与修复（rt-patch #10，2026-09-27 深夜）**：带二级缓存实例当日两次原生段错误
-  （17:38 / 20:38，均 Worker_PP1 猝死、栈仅 glibc pthread 帧、无 Xid 前导）——根因是上游
-  `vllm/v1/simple_kv_offload/cuda_mem_ops.py::copy_blocks` 把**单个 `c_size_t` 标量**当 `attrIdxs`
-  数组传给 `cuMemcpyBatchAsync`，驱动按契约读 `count` 个元素 ⇒ 标量之后全是堆上随机字节，
-  非零值即索引 `attrs[垃圾]` ⇒ 间歇性越界/段错误（上游 issue #53860 同判，本栈代码逐字命中；
-  此前经典连接器的 `error 1` 崩溃亦属同族 API 面）。修复=每次调用传 `np.zeros(cnt, uint64)`
-  零索引数组（语义不变，逐描述符仍用 attrs[0]），以 `patches-extra/dsh_simple_offload_rt.py`
-  运行时钩子落地，**功能（线程/流/事件排程/拷贝路径）零改动**；附带 src/dst 块数与负 id 入参加固。
-  回退开关 `DSH_SIMPLE_OFFLOAD_UPSTREAM=1`；自检 `selftest_simple_rt.py`。详见 docs/08 P59。
+- **segfault/Xid 崩溃链最终定案（三轮更正，全录见 docs/08 P59→P61→P72）**：带二级缓存实例的原生段错误
+  先后被归因于「attrIdxs 越界（#10）」「批量拷贝 API 不稳定（#11）」——**两条都是误诊**。
+  真因之一=**PP 下调度器与 worker 的 CPU 块 id 空间口径分裂**（上游 `generate_scheduler_kv_cache_config`
+  deepcopy rank0），越界地址喂给驱动 ⇒ 正解 **rt-patch #13** 握手 clamp（判据日志「握手 clamp：N -> M」）；
+  真因之二=**load 路径 CPU→GPU DMA 不等 compute stream**，踩刚复用的 GPU 块 ⇒ 间歇 Xid13/43，
+  正解 **rt-patch #14**（compute-done 事件屏障，上游 PR #60078/#47324 未合并的等效移植，10-10）。
+  两补丁都在 `patches-extra/dsh_simple_offload_rt.py`；回退开关 `DSH_SIMPLE_OFFLOAD_UPSTREAM=1`（全不挂）、
+  `DSH_SIMPLE_WAR_SYNC=0`（仅关 #14）；自检 `selftest_simple_rt_v13.py`。**10-14 起判定为稳定版**：
+  当前实例（PP3+160GiB）连续 25 h+ 零 segfault、实例期零新增 Xid。
 
 ### 1.2 两代栈的关系
 

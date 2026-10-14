@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-10-14 — ★二级缓存稳定版（CPU KV 二级缓存生产定型：#14 修 load 跨流崩溃 + #12 每请求命中真值 + 160GiB 档）
+
+- **稳定性定案**：rt-patch **#14**（`dsh_simple_offload_rt.py`）修掉二级缓存 load 路径的间歇
+  `Xid13/43`（CPU→GPU DMA 不等 compute stream，踩刚复用的 GPU 块；上游 PR #60078/#47324 未合并，
+  0.31.0 仍带病）——提交 load 前在 compute stream record 专用 event 交 copy 线程 `wait_event`。
+  生产实例（10-13 18:19 起，PP3 + 160GiB 带档）**连续 25 h 51 m：Segfault 0、实例期零新增 Xid**。
+- **收益定案**：`external_prefix_cache` 命中率 **94.8%**（hits 19.9 亿 / queries 21.0 亿）——
+  160GiB 档（clamp 4194→3355，≈542 万 tok=5.1× GPU 池）下二级缓存已成为长前缀命中的主力承载层，
+  改写旧「外档命中 0 / GPU 池自扛 90%」的小档时代结论（`README-0310.md` §7-4）。
+- **可观测**：rt-patch **#12**（`dsh_extcache_rt.py` + `selftest_extcache_rt.py`，10-07）每请求
+  二级缓存命中真值 → `vllm-ext-cache.jsonl` → 控制台「最近完成请求·二级缓存命中」列；
+  rt-patch **#11**（`dsh_stream_rt.py`）本体**补入库**（此前仓库只有引用没有文件，克隆复现会缺，见 `docs/08` P74）。
+- **参数真值刷新（launch.env 10-13 快照入库）**：`FN_SIMPLE_OFFLOAD=160`、采样 `FN_GENCFG`
+  显式下发 `t0.6/top_p0.95/top_k20/min_p0/presence0/repetition1`（运行 cmdline 终验一致）；
+  inner `GPUMEM` 内置缺省 0.95→**0.90**（10-13，手动裸启的保守档；生产经 envfile 显式 0.95）。
+- **文档**：`README-0310.md` §2/§3/§4/§5/§7 同步；`docs/08` 新增 **P72**（load 跨流 WAR）、
+  **P73**（Scheduler 挂钩两坑：具体类遮蔽接口 + 幂等判据必须 `cls.__dict__`）、**P74**（引用在、本体缺）。
+- 脱敏复扫 sudo 口令字面 / `192.168.x` 命中 0；`patches*/`、`bin/`、`launch.env` 与生产 md5 一致。
+
 ## 2026-10-07 — ★vllm31 版本归档：0.31.0 生产配置环境 + 内存二级缓存优化（运维件入库）
 
 - **版本核实（10-07 实测）**：生产 = 官方 vLLM **0.31.0**（PyPI 同日最新，10-05 发布 / 10-06 上线，零滞后），

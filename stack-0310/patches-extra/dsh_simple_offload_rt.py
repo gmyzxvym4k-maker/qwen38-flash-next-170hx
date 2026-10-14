@@ -39,6 +39,20 @@
   DSH_SIMPLE_GUARD=0            ⇒ 关越界守卫
   DSH_SIMPLE_BATCH=1            ⇒ 拷贝退回批量 API（不推荐）
 
+【#14（2026-10-10 增）：load 路径 WAR 跨流同步（上游 PR #60078/#47324，均未合并）】
+  start_load_kv 把 CPU→GPU DMA 直接扔上 load_stream，不等待 compute stream。
+  刚结束请求的 GPU 块被释放后立即复用给新 load 时，**先前排队的 compute kernel
+  （典型为 speculative decode 步）可能仍在读这些块** → DMA 写与计算读并发 →
+  被读作索引/元数据的行拿到半新半旧的垃圾 → 后续 kernel 越界访问 → Xid 13
+  illegal memory access（现场：copy_event.synchronize() 复读报错，恒在最后一个
+  PP stage 报出）。#59768（RTX PRO 6000）与 #47282 两份独立报告确认同机制；
+  本库 #13 的池 clamp/越界守卫只封「写到池外」，封不住「写对地址但读一半被改」。
+  修法与官方一致：提交 load 前在 compute stream 上 record 专用 event，作为
+  wait_event 交给 copy 线程（load_stream 先等 compute 排空再 DMA）——对称于
+  store 路径 wait_for_save 已有的 compute-done 屏障。事件对象独立于 store 那份，
+  不复用（两提交点在不同函数，防互相 re-record 漂移）。
+  开关 DSH_SIMPLE_WAR_SYNC=0 可关（仅取证，会复崩）。
+
 挂载点：patches-extra/sitecustomize.py 动态 import 本模块的 PATCHES（无需改 sitecustomize）。
 """
 
@@ -54,6 +68,7 @@ import sys
 import time
 
 _MARKER13 = "_dsh_simple_rt_v13"
+_MARKER14 = "_dsh_simple_rt_v14"
 _ROWS_PREFIX = "/dev/shm/vllm_simple_offload_rows."
 
 _WARN_STATE = {"last_ts": 0.0, "count": 0}
@@ -229,6 +244,48 @@ def _patch_worker(module) -> None:
     worker_cls._init_cpu_mode = _init_cpu_mode_v13
     setattr(worker_cls, _MARKER13, True)
     _log("worker._init_cpu_mode：#13 行数发布钩子已挂")
+
+    # ---- #14：load 提交前加 compute-done 跨流屏障（上游 #60078/#47324 等效） ----
+    if getattr(worker_cls, _MARKER14, False):
+        return
+    if os.environ.get("DSH_SIMPLE_WAR_SYNC", "1") == "0":
+        _log("DSH_SIMPLE_WAR_SYNC=0 ⇒ 不挂 #14（会复崩，仅取证）")
+        return
+    _orig_slk = worker_cls.__dict__.get("start_load_kv") or getattr(worker_cls, "start_load_kv", None)
+    if _orig_slk is None:
+        _log("worker 无 start_load_kv ⇒ #14 跳过（版本结构不认识）")
+        return
+
+    def start_load_kv_v14(self):
+        meta = self._connector_metadata
+        if meta is None or not getattr(meta, "load_cpu_blocks", None):
+            return _orig_slk(self)
+        backend = self._backend
+        if backend is None:  # 与上游同分支：无 backend 时不提交
+            return None
+        import torch as _t
+        if not _t.cuda.is_available():
+            return _orig_slk(self)
+        # 独立 event（勿复用 store 的 _store_compute_done：两提交点在不同函数，
+        # 复用会让 copy 线程读到被另一路 re-record 漂移的等待点）。
+        ev = getattr(self, "_dsh_load_compute_done", None)
+        if ev is None:
+            ev = _t.Event()
+            self._dsh_load_compute_done = ev
+        ev.record(_t.cuda.current_stream())
+        return backend.launch_copy(
+            meta.load_cpu_blocks,
+            meta.load_gpu_blocks,
+            is_store=False,
+            event_idx=meta.load_event,
+            events_list=self._load_events,
+            wait_event=ev,
+        )
+
+    start_load_kv_v14.__name__ = "start_load_kv"
+    worker_cls.start_load_kv = start_load_kv_v14
+    setattr(worker_cls, _MARKER14, True)
+    _log("worker.start_load_kv：#14 WAR 跨流同步钩子已挂（load 前等 compute 排空）")
 
 
 # ---------------------------------------------------------------------------
