@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>vLLM 控制台 · 手机版</title>
+<style>
+:root {
+    --bg: #0b1120;
+    --card: #131c31;
+    --card2: #1a2642;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --text3: #64748b;
+    --border: #1e293b;
+    --accent: #818cf8;
+    --green: #34d399;
+    --orange: #fbbf24;
+    --red: #f87171;
+    --blue: #60a5fa;
+    --violet: #a78bfa;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html { font-size: 15px; }
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Inter", "Segoe UI", sans-serif;
+    max-width: 520px;
+    margin: 0 auto;
+    padding: 0 12px 84px;
+    -webkit-font-smoothing: antialiased;
+}
+/* ===== 顶栏 ===== */
+.topbar {
+    position: sticky; top: 0; z-index: 50;
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 2px 10px;
+    background: linear-gradient(var(--bg) 85%, transparent);
+}
+.topbar h1 { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #6b7280; flex: none; }
+.dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.dot.err { background: var(--red); }
+.topbar .ts { font-size: 11px; color: var(--text3); margin-left: auto; font-variant-numeric: tabular-nums; }
+/* ===== 卡片 ===== */
+.card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px;
+    margin-bottom: 10px;
+}
+.card h2 {
+    font-size: 12px; font-weight: 600; color: var(--text2);
+    text-transform: uppercase; letter-spacing: 0.06em;
+    margin-bottom: 10px; display: flex; align-items: center; gap: 6px;
+}
+.card h2 .right { margin-left: auto; font-size: 11px; font-weight: 500; color: var(--text3); text-transform: none; letter-spacing: 0; }
+/* ===== KPI 网格 ===== */
+.kpi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.kpi {
+    background: var(--card2); border-radius: 10px; padding: 10px 12px;
+}
+.kpi .label { font-size: 11px; color: var(--text3); margin-bottom: 3px; }
+.kpi .value { font-size: 21px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.kpi .sub { font-size: 10px; color: var(--text3); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kpi .value.sm { font-size: 15px; }
+.kpi .value.blue { color: var(--blue); }
+.kpi .value.green { color: var(--green); }
+.kpi .value.orange { color: var(--orange); }
+.kpi .value.violet { color: var(--violet); }
+.kpi .value.red { color: var(--red); }
+.bar { height: 5px; background: var(--border); border-radius: 3px; margin-top: 6px; overflow: hidden; }
+.bar > div { height: 100%; border-radius: 3px; background: var(--blue); transition: width .5s; }
+/* ===== 徽标 ===== */
+.chip {
+    display: inline-block; font-size: 10px; font-weight: 700; line-height: 1;
+    padding: 3px 7px; border-radius: 5px;
+    background: rgba(129,140,248,.15); color: var(--accent);
+}
+.chip.gpu0 { background: rgba(96,165,250,.15); color: var(--blue); }
+.chip.gpu1 { background: rgba(167,139,250,.15); color: var(--violet); }
+.chip.ok { background: rgba(52,211,153,.15); color: var(--green); }
+.chip.warn { background: rgba(251,191,36,.15); color: var(--orange); }
+.chip.bad { background: rgba(248,113,113,.15); color: var(--red); }
+.chip.muted { background: var(--card2); color: var(--text3); }
+/* ===== 行列表 ===== */
+.row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 0; border-bottom: 1px solid var(--border);
+    font-size: 13px;
+}
+.row:last-child { border-bottom: none; padding-bottom: 0; }
+.row .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .meta { font-size: 11px; color: var(--text3); margin-top: 1px; word-break: break-all; }
+.row .val { margin-left: auto; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; flex: none; }
+.row .val small { display: block; font-size: 10px; font-weight: 400; color: var(--text3); }
+/* ===== 走势图 ===== */
+#pdChart { width: 100%; height: 150px; display: block; }
+.legend { display: flex; gap: 14px; font-size: 11px; color: var(--text2); margin-bottom: 6px; }
+.legend b { font-variant-numeric: tabular-nums; }
+.sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+/* ===== 快速启动 ===== */
+.qs-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 0; border-bottom: 1px solid var(--border);
+}
+.qs-row:last-child { border-bottom: none; padding-bottom: 0; }
+.qs-row .info { flex: 1; min-width: 0; }
+.qs-row .info .t { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.qs-row .info .d { font-size: 11px; color: var(--text3); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+select {
+    background: var(--card2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 8px; font-size: 12px; max-width: 170px; flex: none;
+}
+.btn {
+    border: none; border-radius: 9px; padding: 9px 14px; font-size: 13px; font-weight: 600;
+    background: var(--accent); color: #0b1120; cursor: pointer; flex: none;
+    transition: opacity .15s;
+}
+.btn:disabled { opacity: .5; }
+.btn.ghost { background: var(--card2); color: var(--text2); font-weight: 500; padding: 9px 10px; font-size: 12px; }
+.btn.running { background: rgba(52,211,153,.15); color: var(--green); }
+/* ===== 底部导航 ===== */
+.bottomnav {
+    position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
+    width: 100%; max-width: 520px; z-index: 60;
+    display: flex;
+    background: rgba(11,17,32,.92);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border-top: 1px solid var(--border);
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+}
+.bottomnav a {
+    flex: 1; text-align: center; text-decoration: none;
+    color: var(--text3); font-size: 10px; font-weight: 500;
+    padding: 5px 0 3px; border-radius: 8px;
+}
+.bottomnav a .ico { font-size: 19px; display: block; line-height: 1.2; }
+.bottomnav a.active { color: var(--accent); background: rgba(129,140,248,.1); }
+/* ===== 最近请求表 ===== */
+.req-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 0; border-bottom: 1px solid var(--border);
+    font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.req-row:last-child { border-bottom: none; }
+.req-row .main { flex: 1; min-width: 0; }
+.req-row .main .l1 { display: flex; gap: 6px; align-items: center; }
+.req-row .main .l2 { font-size: 10px; color: var(--text3); margin-top: 2px; }
+.req-row .side { text-align: right; flex: none; }
+.req-row .side b { font-size: 13px; }
+.req-row .side small { display: block; font-size: 10px; color: var(--text3); }
+/* 页面切换 */
+.page { display: none; }
+.page.active { display: block; animation: fadein .18s ease; }
+@keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+/* 启动结果弹层 */
+.toast {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: 76px; z-index: 100;
+    background: var(--card2); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px 16px;
+    font-size: 12px; line-height: 1.6; max-width: 92%;
+    box-shadow: 0 8px 30px rgba(0,0,0,.5);
+    display: none; white-space: pre-line;
+}
+.toast.show { display: block; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+    <span class="dot" id="statusDot"></span>
+    <h1>vLLM 控制台</h1>
+    <span class="ts" id="ts">--</span>
+</div>
+
+<!-- ========== 监控页 ========== -->
+<div class="page active" id="page-dash">
+    <!-- 机器状态 -->
+    <div class="card">
+        <h2>机器状态 <span class="right" id="powerTotal">--</span></h2>
+        <div class="kpi-grid">
+            <div class="kpi">
+                <div class="label">GPU 显存</div>
+                <div class="value blue" id="memVal">--</div>
+                <div class="bar"><div id="memBar" style="width:0%"></div></div>
+                <div class="sub" id="memSub">--</div>
+            </div>
+            <div class="kpi">
+                <div class="label">GPU 利用率</div>
+                <div class="value green" id="utilVal">--</div>
+                <div class="bar"><div id="utilBar" style="width:0%;background:var(--green)"></div></div>
+                <div class="sub" id="utilSub">--</div>
+            </div>
+            <div class="kpi">
+                <div class="label">整机功耗</div>
+                <div class="value orange" id="powerVal">--</div>
+                <div class="sub" id="powerSub">--</div>
+            </div>
+            <div class="kpi">
+                <div class="label">GPU 温度</div>
+                <div class="value violet" id="tempVal">--</div>
+                <div class="sub" id="tempSub">--</div>
+            </div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px" id="perGpuChips"></div>
+    </div>
+
+    <!-- Token 吞吐 -->
+    <div class="card">
+        <h2>Token 吞吐 <span class="right" id="speedNow">--</span></h2>
+        <div class="kpi-grid">
+            <div class="kpi">
+                <div class="label">输入 Token（累计）</div>
+                <div class="value blue" id="inTok">--</div>
+                <div class="sub">缓存命中 <b id="hitRate" style="color:var(--green)">--</b> · 0命中占比 <span id="zeroHit">--</span></div>
+            </div>
+            <div class="kpi">
+                <div class="label">输出 Token（累计）</div>
+                <div class="value violet" id="outTok">--</div>
+                <div class="sub">当前速度 <b id="speedSub" style="color:var(--green)">--</b> tok/s</div>
+            </div>
+            <div class="kpi">
+                <div class="label">预填充速度</div>
+                <div class="value green" id="ppTps">--</div>
+                <div class="sub">tok/s（未缓存预填充）</div>
+            </div>
+            <div class="kpi">
+                <div class="label">生成速度</div>
+                <div class="value orange" id="tgTps">--</div>
+                <div class="sub">tok/s · TTFT <span id="ttft">--</span> ms</div>
+            </div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px" id="cacheChips"></div>
+    </div>
+
+    <!-- 走势图 -->
+    <div class="card">
+        <h2>预填充 → 输出 走势 <span class="right">近 3 分钟</span></h2>
+        <div class="legend">
+            <span><span class="sw" style="background:var(--blue)"></span>预填充 <b id="ppNow">--</b> K tok/s</span>
+            <span><span class="sw" style="background:var(--orange)"></span>输出 <b id="genNow">--</b> tok/s</span>
+        </div>
+        <canvas id="pdChart"></canvas>
+    </div>
+
+    <!-- 并发请求 -->
+    <div class="card">
+        <h2>并发请求
+            <span class="right">
+                <span class="chip ok">Running <b id="runN">0</b></span>
+                <span class="chip warn" style="margin-left:4px">Queued <b id="queueN">0</b></span>
+            </span>
+        </h2>
+        <div id="activeList"><div class="row" style="color:var(--text3)">空闲中…</div></div>
+    </div>
+
+    <!-- 最近完成请求 -->
+    <div class="card">
+        <h2>最近完成请求 <span class="right">近 5 条</span></h2>
+        <div id="recentList"><div class="row" style="color:var(--text3)">加载中…</div></div>
+    </div>
+
+    <!-- 模型信息 -->
+    <div class="card">
+        <h2>模型信息 <span class="right" id="modelCount"></span></h2>
+        <div id="modelList"><div class="row" style="color:var(--text3)">加载中…</div></div>
+    </div>
+</div>
+
+<!-- ========== 启动页 ========== -->
+<div class="page" id="page-qs">
+    <div class="card">
+        <h2>快速启动 <span class="right">加载约 1~3 分钟</span></h2>
+        <div id="qsList"><div class="row" style="color:var(--text3)">加载中…</div></div>
+        <div style="margin-top:12px;text-align:center">
+            <button class="btn" id="qsBothBtn" style="width:100%">▶ 双卡一键启动</button>
+        </div>
+    </div>
+    <div class="card">
+        <h2>说明</h2>
+        <div style="font-size:12px;color:var(--text2);line-height:1.8">
+            · 每行选择预设后点「启动」，已运行的卡自动跳过<br>
+            · 预设与桌面版共用（quickstart-presets.json），桌面端改的预设这里同步可见<br>
+            · 启动进度可在监控页「并发请求 / 模型信息」观察
+        </div>
+    </div>
+</div>
+
+<!-- 底部导航 -->
+<div class="bottomnav">
+    <a href="#" data-page="dash" class="active"><span class="ico">📊</span>监控</a>
+    <a href="#" data-page="qs"><span class="ico">🚀</span>启动</a>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = n => n == null || isNaN(n) ? '--' : Math.round(n).toLocaleString('en-US');
+const fmt1 = n => n == null || isNaN(n) ? '--' : (Math.round(n * 10) / 10).toString();
+const fmtTok = n => {
+    if (n == null || isNaN(n)) return '--';
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(Math.round(n));
+};
+const gb = b => b == null ? '--' : (b / 1073741824).toFixed(1);
+
+async function apiFetch(url, opts) {
+    const r = await fetch(url, opts);
+    if (!r.ok) throw new Error(url + ' → HTTP ' + r.status);
+    return r.json();
+}
+
+// 自动缩字：KPI 数值过长时缩小字号，防止撑破卡片
+function fitKpiValues() {
+    document.querySelectorAll('.kpi .value').forEach(el => {
+        const len = (el.textContent || '').trim().length;
+        el.classList.toggle('sm', len > 12);
+    });
+}
+
+// ===== 页面切换 =====
+document.querySelectorAll('.bottomnav a').forEach(a => {
+    a.addEventListener('click', e => {
+        e.preventDefault();
+        const p = a.dataset.page;
+        document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
+        $('page-' + p).classList.add('active');
+        document.querySelectorAll('.bottomnav a').forEach(x => x.classList.toggle('active', x === a));
+    });
+});
+
+// ===== Toast =====
+let _toastTimer = null;
+function toast(msg, ms) {
+    const t = $('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => t.classList.remove('show'), ms || 6000);
+}
+
+// ===== 状态灯 =====
+function setStatus(ok, err) {
+    const d = $('statusDot');
+    d.className = 'dot ' + (ok ? 'on' : err ? 'err' : '');
+    $('ts').textContent = ok ? new Date().toLocaleTimeString('zh-CN', { hour12: false }) : (err || '连接中…');
+}
+
+// ===== 机器状态（gpu_info + power）=====
+async function loadMachine() {
+    try {
+        const [g, p] = await Promise.all([
+            apiFetch('/v1/internal/gpu_info').catch(() => null),
+            apiFetch('/v1/internal/power').catch(() => null),
+        ]);
+        if (!g && !p) return;
+        if (g && g.gpu) {
+            const totalGb = gb(g.gpu.total), usedGb = gb(g.gpu.used);
+            const pct = g.gpu.total > 0 ? (g.gpu.used / g.gpu.total) * 100 : 0;
+            $('memVal').textContent = usedGb + ' / ' + totalGb + ' GB';
+            $('memBar').style.width = pct.toFixed(0) + '%';
+            $('memBar').style.background = pct > 90 ? 'var(--red)' : pct > 70 ? 'var(--orange)' : 'var(--blue)';
+            $('memSub').textContent = pct.toFixed(0) + '% 已使用 · ' + (g.gpu.gpuCount || 1) + ' 卡合计';
+            $('utilVal').textContent = (g.gpu.utilization || 0) + '%';
+            $('utilBar').style.width = (g.gpu.utilization || 0) + '%';
+            $('utilSub').textContent = 'GPU 计算利用率';
+            $('tempVal').textContent = g.gpu.temperature > 0 ? g.gpu.temperature.toFixed(0) + '°C' : '--';
+            $('tempSub').textContent = g.gpu.temperature_mem > 0 ? ('核心 ' + g.gpu.temperature.toFixed(0) + '°C · 显存 ' + g.gpu.temperature_mem.toFixed(0) + '°C') : 'nvidia-smi 实测';
+            // 逐卡
+            const per = g.gpu.perGpu || [];
+            $('perGpuChips').innerHTML = per.map(x =>
+                '<span class="chip ' + (Number(x.index) === 0 ? 'gpu0' : 'gpu1') + '">GPU' + x.index +
+                ' ' + (x.utilization || 0) + '% · ' + gb(x.used) + '/' + gb(x.total) + 'GB · ' +
+                (x.power || 0).toFixed(0) + 'W · ' + (x.temperature > 0 ? x.temperature.toFixed(0) : '--') + '°C' +
+                (x.temperature_mem > 0 ? (' / 显存 ' + x.temperature_mem.toFixed(0) + '°C') : '') + '</span>'
+            ).join('');
+        }
+        if (p) {
+            const tot = (p.adjustedTotalW != null) ? p.adjustedTotalW : p.totalW;
+            $('powerVal').textContent = (tot != null ? tot.toFixed(0) : '--') + ' W';
+            const parts = [];
+            if (p.gpu && p.gpu.powerW != null) parts.push('GPU ' + p.gpu.powerW.toFixed(0) + 'W');
+            if (p.cpu && p.cpu.powerW != null) parts.push('CPU ' + p.cpu.powerW.toFixed(0) + 'W');
+            if (p.offsetW) parts.push('补偿 +' + p.offsetW + 'W');
+            $('powerSub').textContent = parts.join(' · ') || '整机估算';
+            $('powerTotal').textContent = '总功耗 ' + (tot != null ? tot.toFixed(0) : '--') + ' W';
+        }
+        fitKpiValues();
+    } catch (e) { /* 静默，状态灯由 stats 决定 */ }
+}
+
+// ===== 主 stats =====
+let _stats = null;
+async function loadStats() {
+    try {
+        const s = await apiFetch('/v1/internal/stats');
+        _stats = s;
+        setStatus(true);
+        // Token
+        $('inTok').textContent = fmtTok(s.total_input_tokens);
+        $('outTok').textContent = fmtTok(s.total_output_tokens);
+        const hr = s.cache_hit_rate;
+        $('hitRate').textContent = (hr != null ? hr : '--') + '%';
+        const zh = s.zero_hit;
+        if (zh) {
+            const el = $('zeroHit');
+            el.textContent = zh.pct + '%';
+            el.style.color = zh.pct >= 50 ? 'var(--red)' : zh.pct >= 30 ? 'var(--orange)' : 'var(--green)';
+        }
+        const ls = s.last_second || {};
+        $('speedNow').textContent = '实时 ' + fmt1(ls.speed || 0) + ' tok/s';
+        $('speedSub').textContent = fmt1(s.total_speed || 0);
+        $('ppTps').textContent = fmt(s.bench_pp_tps);
+        $('tgTps').textContent = fmt(s.bench_tg_tps);
+        $('ttft').textContent = fmt(s.avg_ttft_ms);
+        // 每卡缓存
+        const cp = s.cache_per_port || [];
+        $('cacheChips').innerHTML = cp.map(c => {
+            const cls = c.rate >= 75 ? 'ok' : c.rate >= 40 ? 'warn' : 'bad';
+            return '<span class="chip ' + (c.gpu === 0 ? 'gpu0' : c.gpu === 1 ? 'gpu1' : 'muted') + '" title="自实例启动累计">' +
+                'GPU' + (c.gpu != null ? c.gpu : '?') + ' · ' + c.port + ' 命中 ' + c.rate + '%</span>';
+        }).join('');
+        // 并发
+        const insts = s.instances || [];
+        let run = 0, queue = 0;
+        insts.forEach(i => { run += (i.running || 0); queue += (i.queued || 0); });
+        $('runN').textContent = run;
+        $('queueN').textContent = queue;
+        renderActive(insts);
+        fitKpiValues();
+    } catch (e) {
+        setStatus(false, '连接失败');
+    }
+}
+
+function renderActive(insts) {
+    const el = $('activeList');
+    const rows = [];
+    insts.forEach(i => {
+        const reqs = (i.active_requests || []).slice(0, 4);
+        const waits = (i.waiting_requests || []).slice(0, 2);
+        if (!reqs.length && !waits.length) {
+            rows.push('<div class="row"><span class="chip ' + (i.gpu === 0 ? 'gpu0' : i.gpu === 1 ? 'gpu1' : 'muted') + '">GPU' + (i.gpu != null ? i.gpu : '?') + '</span>' +
+                '<span class="name">' + esc(i.model || ('端口 ' + i.port)) + '</span>' +
+                '<span class="val">空闲<small>' + i.port + (i.last_second && i.last_second.speed ? ' · ' + fmt1(i.last_second.speed) + ' tok/s' : '') + '</small></span></div>');
+            return;
+        }
+        reqs.forEach(r => {
+            const preDone = r.prefill_done_uncached != null ? r.prefill_done_uncached : 0;
+            const preTotal = r.prefill_total_uncached != null ? r.prefill_total_uncached : (r.tokens_prefill || 0);
+            const pct = preTotal > 0 ? Math.min(100, preDone / preTotal * 100) : 100;
+            const phase = r.phase === 'prefill' ? '预填充' : '生成中';
+            const phaseColor = r.phase === 'prefill' ? 'var(--blue)' : 'var(--green)';
+            const cached = r.prefill_cached ? ' · 缓存 ' + fmtTok(r.prefill_cached) : '';
+            const speed = r.phase === 'decode'
+                ? (r.tok_last_sec != null ? r.tok_last_sec : 0) + ' tok/s'
+                : (r.prefill_tps != null ? 'prefill ' + fmt1(r.prefill_tps) + ' tok/s' : '');
+            rows.push('<div class="row"><span class="chip ' + (i.gpu === 0 ? 'gpu0' : i.gpu === 1 ? 'gpu1' : 'muted') + '">GPU' + (i.gpu != null ? i.gpu : '?') + '</span>' +
+                '<div class="name" style="flex:1;min-width:0">' + esc(r.id || 'req') +
+                '<div class="bar" style="margin-top:5px"><div style="width:' + pct.toFixed(1) + '%;background:' + phaseColor + '"></div></div></div>' +
+                '<span class="val">' + phase + '<small>' + (r.tokens_generated != null ? fmt(r.tokens_generated) + ' tok' : '') + (r.elapsed_s ? ' · ' + Math.round(r.elapsed_s) + 's' : '') + (speed ? '<br>' + speed : '') + '</small></span></div>');
+        });
+        waits.forEach(w => {
+            rows.push('<div class="row"><span class="chip warn">排队</span>' +
+                '<span class="name">' + esc(w.id || 'req') + '</span>' +
+                '<span class="val">等待<small>' + (w.queued_s != null ? w.queued_s + 's' : '') + '</small></span></div>');
+        });
+    });
+    el.innerHTML = rows.length ? rows.join('') : '<div class="row" style="color:var(--text3)">空闲中…</div>';
+}
+
+// ===== 最近完成请求 =====
+async function loadRecent() {
+    try {
+        const d = await apiFetch('/v1/internal/recent-requests?limit=5');
+        const reqs = (d.requests || []).slice(0, 5);
+        if (!reqs.length) { $('recentList').innerHTML = '<div class="row" style="color:var(--text3)">暂无记录</div>'; return; }
+        $('recentList').innerHTML = reqs.map(r => {
+            const hit = r.prompt_tokens > 0 ? (r.cached_tokens / r.prompt_tokens * 100) : 0;
+            const hitCls = hit >= 75 ? 'ok' : hit >= 40 ? 'warn' : 'bad';
+            const gpuChip = r.gpu != null ? '<span class="chip ' + (r.gpu === 0 ? 'gpu0' : r.gpu === 1 ? 'gpu1' : 'muted') + '">GPU' + r.gpu + '</span>' : '';
+            const mtp = (r.mtp_drafted > 0 && r.mtp_hit_rate != null) ? ' · MTP ' + r.mtp_hit_rate + '%' : '';
+            return '<div class="req-row">' + gpuChip +
+                '<div class="main"><div class="l1"><b>' + fmtTok(r.prompt_tokens) + '</b><span style="color:var(--text3)">prompt</span></div>' +
+                '<div class="l2">生成 ' + fmt(r.gen_tokens) + ' tok · e2e ' + (r.e2e_s || 0).toFixed(1) + 's' + mtp + '</div></div>' +
+                '<div class="side"><b style="color:' + (hit >= 75 ? 'var(--green)' : hit >= 40 ? 'var(--orange)' : 'var(--red)') + '">' + hit.toFixed(0) + '%</b><small>缓存命中</small></div></div>';
+        }).join('');
+    } catch (e) { $('recentList').innerHTML = '<div class="row" style="color:var(--text3)">加载失败</div>'; }
+}
+
+// ===== 模型信息 =====
+async function loadModels() {
+    try {
+        const m = await apiFetch('/v1/models');
+        const insts = (_stats && _stats.instances) || [];
+        const portGpu = {};
+        insts.forEach(i => { if (i.port != null) portGpu[i.port] = i.gpu; });
+        const seen = new Set();
+        const entries = [];
+        (m.data || []).forEach(x => {
+            const gpu = (x.port != null && portGpu[x.port] != null) ? portGpu[x.port] : null;
+            entries.push({ gpu, port: x.port, id: x.id, ctx: x.max_model_len });
+            if (x.port != null) seen.add(x.port);
+        });
+        insts.forEach(i => {
+            if (i.port != null && !seen.has(i.port)) entries.push({ gpu: i.gpu, port: i.port, id: i.model || ('端口 ' + i.port), ctx: null });
+        });
+        entries.sort((a, b) => ((a.gpu == null ? 999 : a.gpu) - (b.gpu == null ? 999 : b.gpu)) || ((a.port || 0) - (b.port || 0)));
+        $('modelCount').textContent = entries.length + ' 个实例';
+        $('modelList').innerHTML = entries.length ? entries.map(e =>
+            '<div class="row"><span class="chip ' + (e.gpu === 0 ? 'gpu0' : e.gpu === 1 ? 'gpu1' : 'muted') + '">GPU' + (e.gpu != null ? e.gpu : '?') + '</span>' +
+            '<div class="name" style="flex:1;min-width:0">' + esc(e.id) +
+            (e.ctx ? '<div class="meta">上下文 ' + Number(e.ctx).toLocaleString() + ' tok</div>' : '') + '</div>' +
+            '<span class="val">' + (e.port || '--') + '</span></div>'
+        ).join('') : '<div class="row" style="color:var(--text3)">无实例</div>';
+    } catch (e) { /* 忽略 */ }
+}
+
+// ===== 走势图 =====
+let _pdPoints = [];
+async function loadPdSeries() {
+    try {
+        const d = await apiFetch('/v1/internal/pd-series');
+        const pts = (d.points || []).slice(-180); // 近 3 分钟
+        _pdPoints = pts;
+        if (pts.length) {
+            const last = pts[pts.length - 1];
+            // 预填充用 K tok/s（千 token/秒），输出用 tok/s —— 两者量级差 2-3 个数量级
+            $('ppNow').textContent = ((last.prefill || 0) / 1000).toFixed(1);
+            $('genNow').textContent = fmt(last.gen || 0);
+        }
+        drawChart();
+    } catch (e) { /* 忽略 */ }
+}
+function drawChart() {
+    const cv = $('pdChart');
+    const dpr = window.devicePixelRatio || 1;
+    const W = cv.clientWidth, H = cv.clientHeight;
+    if (!W || !H) return;
+    cv.width = W * dpr; cv.height = H * dpr;
+    const ctx = cv.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+    const pts = _pdPoints;
+    if (pts.length < 2) return;
+    // 双 Y 轴独立缩放 + 不同单位：预填充峰值数千~数万 tok/s，输出通常几十~几百 tok/s，
+    // 共用一个刻度时输出曲线会被压成一条直线。左轴=预填充（K tok/s，蓝），右轴=输出（tok/s，橙）。
+    let maxP = 0;
+    pts.forEach(p => { maxP = Math.max(maxP, p.prefill || 0); });
+    maxP = Math.max(1000, maxP * 1.15);
+    // 输出轴用 p95 稳健刻度：一次突发尖峰不应把正常 decode 曲线压到 x 轴下
+    const genVals = pts.map(p => p.gen || 0).sort((a, b) => a - b);
+    const genP95 = genVals.length ? genVals[Math.min(genVals.length - 1, Math.floor(genVals.length * 0.95))] : 0;
+    const maxG = Math.max(10, (genP95 || 10) * 1.15);
+    const padL = 34, padR = 34, padT = 14, padB = 16;
+    const iw = W - padL - padR, ih = H - padT - padB;
+    const x = i => padL + i / (pts.length - 1) * iw;
+    const yP = v => padT + ih - (v / maxP) * ih;
+    const yG = v => padT + ih - (Math.min(v, maxG) / maxG) * ih;
+    // 网格 + 双轴刻度（左=预填充 K tok/s 蓝色，右=输出 tok/s 橙色）
+    ctx.font = '9px sans-serif';
+    for (let i = 0; i <= 4; i++) {
+        const yy = padT + ih * i / 4;
+        ctx.strokeStyle = 'rgba(100,116,139,.15)'; ctx.beginPath();
+        ctx.moveTo(padL, yy); ctx.lineTo(W - padR, yy); ctx.stroke();
+        ctx.fillStyle = 'rgba(96,165,250,.9)'; ctx.textAlign = 'right';
+        ctx.fillText((maxP * (4 - i) / 4 / 1000).toFixed(1), padL - 4, yy + 3);
+        ctx.fillStyle = 'rgba(251,146,60,.9)'; ctx.textAlign = 'left';
+        const gv = maxG * (4 - i) / 4;
+        ctx.fillText(gv >= 100 ? String(Math.round(gv)) : gv.toFixed(1), W - padR + 4, yy + 3);
+    }
+    // 轴单位标注
+    ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(96,165,250,.9)';
+    ctx.fillText('K tok/s', padL, 8);
+    ctx.textAlign = 'right'; ctx.fillStyle = 'rgba(251,146,60,.9)';
+    ctx.fillText('tok/s', W - padR, 8);
+    // X 轴时间标签
+    const now = Date.now() / 1000;
+    ctx.textAlign = 'center'; ctx.fillStyle = '#64748b';
+    for (const off of [0, 60, 120]) {
+        const t = now - off;
+        const idx = pts.findIndex(p => p.t >= t);
+        if (idx >= 0) {
+            ctx.fillText(off === 0 ? '现在' : '-' + off + 's', Math.min(W - padR - 12, x(idx)), H - 4);
+        }
+    }
+    function area(key, color, yFn) {
+        ctx.beginPath();
+        pts.forEach((p, i) => { const px = x(i), py = yFn(p[key] || 0); i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py); });
+        ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.lineJoin = 'round'; ctx.stroke();
+        ctx.lineTo(x(pts.length - 1), H - padB); ctx.lineTo(x(0), H - padB); ctx.closePath();
+        const grad = ctx.createLinearGradient(0, 0, 0, H);
+        grad.addColorStop(0, color + '55'); grad.addColorStop(1, color + '05');
+        ctx.fillStyle = grad; ctx.fill();
+    }
+    area('prefill', '#60a5fa', yP);
+    area('gen', '#fb923c', yG);
+}
+
+// ===== 快速启动 =====
+let _qsCards = null;
+async function loadQs() {
+    try {
+        const d = await apiFetch('/v1/internal/quickstart');
+        _qsCards = d.cards || [];
+        renderQs();
+    } catch (e) {
+        $('qsList').innerHTML = '<div class="row" style="color:var(--text3)">加载失败: ' + esc(e.message) + '</div>';
+    }
+}
+function renderQs() {
+    if (!_qsCards) return;
+    $('qsList').innerHTML = _qsCards.map(c => {
+        const dot = c.running ? '<span class="dot on"></span>' : '<span class="dot"></span>';
+        const opts = c.presets.map(p =>
+            '<option value="' + esc(p.key) + '">' + esc(p.name) + (p.standard ? '（默认）' : '') + '</option>'
+        ).join('');
+        const state = c.running
+            ? '<button class="btn running" data-qs="' + esc(c.key) + '" disabled>⏩ 运行中</button>'
+            : '<button class="btn" data-qs="' + esc(c.key) + '">▶ 启动</button>';
+        return '<div class="qs-row">' +
+            '<div class="info"><div class="t">' + dot + ' GPU' + c.gpu + ' · ' + c.port + '</div>' +
+            '<div class="d">' + (c.running ? ('运行中 · ' + esc(c.engine || '--') + ' · PID ' + (c.pid || '--')) : '空闲') + '</div></div>' +
+            '<select data-qssel="' + esc(c.key) + '">' + opts + '</select>' + state + '</div>';
+    }).join('');
+    document.querySelectorAll('[data-qs]').forEach(b => b.addEventListener('click', () => quickStart(b.dataset.qs)));
+}
+async function quickStart(target) {
+    const presets = {};
+    document.querySelectorAll('select[data-qssel]').forEach(s => presets[s.dataset.qssel] = s.value);
+    const label = target === 'both' ? '双卡' : ('GPU' + (_qsCards.find(c => c.key === target) || {}).gpu);
+    if (!confirm('一键启动：' + label + '？\n加载约 1~3 分钟；已运行的卡自动跳过。')) return;
+    const btns = document.querySelectorAll('#page-qs .btn');
+    btns.forEach(b => b.disabled = true);
+    try {
+        const r = await fetch('/v1/internal/quickstart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target, presets }) });
+        const d = await r.json();
+        const lines = (d.results || []).map(x => {
+            const nm = x.presetName || x.preset || '';
+            const st = x.status === 'healthy' ? '✅ 已启动（' + nm + '，' + x.waited_s + 's）'
+                : x.status === 'running' ? '⏩ 已在运行，已跳过'
+                : x.status === 'starting' ? '⏳ 拉起中（' + nm + '），稍后刷新查看'
+                : '❌ ' + x.status + ' ' + (x.error || '');
+            return '· GPU' + (x.gpu != null ? x.gpu : '--') + ' · ' + (x.port || '--') + ': ' + st;
+        }).join('\n');
+        toast('快速启动结果\n' + lines, 10000);
+    } catch (e) {
+        toast('快速启动失败: ' + e.message, 8000);
+    } finally {
+        btns.forEach(b => b.disabled = false);
+        loadQs();
+    }
+}
+$('qsBothBtn').addEventListener('click', () => quickStart('both'));
+
+// ===== 轮询 =====
+let _dashTimer = null;
+function startDashPolling() {
+    clearInterval(_dashTimer);
+    loadMachine();
+    loadStats();
+    loadRecent();
+    loadModels();
+    loadPdSeries();
+    _dashTimer = setInterval(() => {
+        const active = document.querySelector('.page.active').id;
+        if (active === 'page-dash') {
+            loadMachine();
+            loadStats();
+            loadPdSeries();
+            loadRecent();
+            loadModels();
+        }
+    }, 2000);
+}
+loadQs();
+startDashPolling();
+window.addEventListener('resize', drawChart);
+</script>
+</body>
+</html>

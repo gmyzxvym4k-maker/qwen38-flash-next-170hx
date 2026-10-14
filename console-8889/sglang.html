@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SGLang 引擎监控 · vLLM 管理台</title>
+<style>
+  :root {
+    --bg: #f6f7fb; --card: #ffffff; --border: #e5e7eb; --border-light: #eef0f4;
+    --text: #1f2937; --text-secondary: #4b5563; --text-tertiary: #9ca3af;
+    --accent: #6366f1; --accent-bg: #eef2ff;
+    --violet: #8b5cf6; --violet-bg: #f3eeff;
+    --blue: #3b82f6; --blue-bg: #eaf2ff;
+    --green: #10b981; --green-bg: #e7f8f1;
+    --orange: #d97706; --orange-bg: #fef3e2;
+    --red: #dc2626; --red-bg: #fdeaea;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; padding: 18px 20px 40px; }
+  .head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+  .head h1 { font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .head h1 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--violet); display: inline-block; }
+  .stamp { font-size: 11px; color: var(--text-tertiary); margin-left: auto; }
+  .inst-bar { display: flex; gap: 8px; flex-wrap: wrap; }
+  .inst-badge { font-size: 12px; padding: 4px 10px; border-radius: 8px; background: var(--violet-bg); color: var(--violet); font-weight: 600; display: inline-flex; gap: 6px; align-items: center; }
+  .inst-badge.off { background: var(--bg); color: var(--text-tertiary); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(205px, 1fr)); gap: 12px; margin-bottom: 14px; }
+  .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; min-height: 74px; }
+  .kpi .lab { font-size: 11px; color: var(--text-tertiary); margin-bottom: 4px; }
+  .kpi .val { font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .kpi .val small { font-size: 11px; font-weight: 500; color: var(--text-tertiary); margin-left: 3px; }
+  .kpi .sub { font-size: 11px; color: var(--text-secondary); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
+  .card h2 { font-size: 13px; font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .card h2::before { content: ""; width: 3px; height: 13px; border-radius: 2px; background: var(--violet); display: inline-block; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: right; color: var(--text-tertiary); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--border-light); }
+  th:first-child, td:first-child { text-align: left; }
+  td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--border-light); font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  td.k { color: var(--text-secondary); text-align: left; }
+  .bar { height: 8px; border-radius: 4px; background: var(--border-light); overflow: hidden; margin-top: 6px; }
+  .bar > i { display: block; height: 100%; background: linear-gradient(90deg, var(--violet), var(--accent)); border-radius: 4px; transition: width .4s; }
+  .note { font-size: 12px; line-height: 1.7; border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; }
+  .note.warn { background: rgba(251,191,36,.12); border: 1px solid rgba(251,191,36,.45); color: var(--orange); }
+  .note.err { background: var(--red-bg); border: 1px solid rgba(220,38,38,.4); color: var(--red); }
+  .note.ok { background: var(--green-bg); border: 1px solid rgba(16,185,129,.35); color: var(--green); }
+  .empty { text-align: center; padding: 60px 20px; color: var(--text-tertiary); }
+  .empty .big { font-size: 40px; margin-bottom: 10px; }
+  .empty button { margin-top: 14px; font: inherit; font-size: 13px; padding: 8px 18px; border-radius: 10px; border: 1px solid var(--accent); background: var(--accent-bg); color: var(--accent); cursor: pointer; }
+  .mono { font-family: var(--mono); font-size: 11px; }
+  .tag { display: inline-block; font-size: 10px; line-height: 1; padding: 3px 7px; border-radius: 5px; background: var(--violet-bg); color: var(--violet); font-weight: 700; }
+  .tag.gray { background: var(--bg); color: var(--text-tertiary); }
+</style>
+</head>
+<body>
+  <div class="head">
+    <h1><span class="dot"></span>SGLang 引擎监控</h1>
+    <div class="inst-bar" id="instBar"><span class="inst-badge off">检测中…</span></div>
+    <div class="stamp" id="stamp">--</div>
+  </div>
+  <div id="notes"></div>
+  <div id="body"><div class="empty"><div class="big">⏳</div>加载中…</div></div>
+
+<script>
+// ===== SGLang 独立监控页（vLLM 管理台内嵌 /sglang.html） =====
+// 设计约束（09-23 / 09-25 线上教训固化）：
+//  ① 轮询链任何一次异常都不能吃掉重排句柄 → tick 的 then/catch 双侧都 setTimeout 续跑；
+//  ② 前端超时不用 AbortSignal.timeout()（标签页节能冻结后会永久挂起），自建控制器并清理；
+//  ③ 后台标签暂停轮询（visibilitychange 回前台立即补刷）；
+//  ④ 渲染分段 safeRun：一段抛错只坏一个卡片，不拖垮整页。
+// 数据源：/v1/internal/model-manager（实例发现）→ /v1/internal/metrics?port=（逐实例指标）
+//        + /v1/internal/model-params?port=（引擎参数）+ /v1/internal/recent-requests（导出诊断）。
+
+var POLL_MS = 2000;
+// model-manager 超时：后端已加缓存（正常 <100ms），取 12s 大于后端最差耗时，
+// 避免「后端有数据、前端先放弃」被误判成无实例（10-03 vllm.html 同修）。
+var MM_TIMEOUT_MS = 12000;
+var _timer = null, _busy = false, _lastTickAt = 0;
+var _lastGood = [];        // 上一次成功发现的sglang实例（取数失败时保留画面用；
+                         // 只存本运行时的实例，空态判定才不会把「另一种引擎在跑」误当自己有实例）
+var _lastGoodAt = 0;       // 上一次成功取数的时刻
+var _emptySince = 0;       // 「后端返回空列表」起始时刻（宽限期判抖动用，0=未在观察）
+var EMPTY_GRACE_MS = 6000; // 空列表连续这么久才认定为「实例已停止」
+var _prev = {};          // port -> { t, ppInput, gen, prompt, cached, idle, verify }（差值用）
+var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+
+function fetchT(url, ms) {
+  // 自建超时控制器（教训②）：settle 时清 timer，防句柄泄漏
+  var ctl = new AbortController();
+  var to = setTimeout(function () { try { ctl.abort(); } catch (e) {} }, ms || 8000);
+  return fetch(url, { signal: ctl.signal }).then(function (r) {
+    clearTimeout(to);
+    return r;
+  }, function (e) { clearTimeout(to); throw e; });
+}
+function safeRun(fn) { try { fn(); } catch (e) { console.warn('[sglang-page] render segment failed:', e); } }
+function fmt(n, d) { if (n == null || isNaN(n)) return '--'; return Number(n).toFixed(d == null ? 1 : d); }
+function fmtInt(n) { if (n == null || isNaN(n)) return '--'; return Math.round(n).toLocaleString(); }
+
+// ---- metrics 文本解析：族名 → 样本列表（值 + 标签） ----
+// 维度规则（10-03 实测两类拆分，口径不同必须区分）：
+//  · 带 pp_rank 标签的族 = PP2 两个 scheduler stage 各自注册的**同值副本**（running/kv/
+//    spec_*/prefill_effective 等）→ 求和会×2、取 rank0 会漏（spec_* 只登记在末段 rank1，
+//    rank0 恒 0）→ 正确口径 = 各 rank 取 **max**。
+//  · 不带 pp_rank 的族按功能标签拆分（is_streaming、mode、handler…），各序列是**真实分量**
+//    （如 generation_tokens_total streaming=true+false）→ 求和。
+function parseMetrics(text) {
+  var fams = {};
+  var lines = text.split('\n');
+  for (var i = 0; i < lines.length; i++) {
+    var ln = lines[i];
+    if (!ln || ln[0] === '#' || ln.indexOf('sglang:') !== 0) continue;
+    var sp = ln.lastIndexOf(' ');
+    if (sp < 0) continue;
+    var v = parseFloat(ln.substring(sp + 1));
+    if (isNaN(v)) continue;
+    var head = ln.substring(0, sp).trim();
+    var ob = head.indexOf('{');
+    var name = ob < 0 ? head : head.substring(0, ob);
+    var labels = {};
+    if (ob >= 0) {
+      var lr = head.substring(ob + 1, head.length - 1);
+      var re = /([a-zA-Z_0-9]+)="([^"]*)"/g, mm;
+      while ((mm = re.exec(lr))) labels[mm[1]] = mm[2];
+    }
+    (fams[name] = fams[name] || []).push({ v: v, l: labels });
+  }
+  return fams;
+}
+function famValue(fams, base, modeLabel) {
+  var arr = fams[base];
+  if (!arr || !arr.length) return null;
+  if (modeLabel != null) {
+    arr = arr.filter(function (s) { return s.l.mode === modeLabel; });
+    if (!arr.length) return null;
+  }
+  var hasRank = arr.some(function (s) { return s.l.pp_rank != null; });
+  if (hasRank) {
+    var mx = -Infinity, hit = 0;
+    for (var i = 0; i < arr.length; i++) { if (arr[i].v > mx) mx = arr[i].v; hit++; }
+    return hit ? mx : null;
+  }
+  if (arr.length === 1) return arr[0].v;
+  var t = 0;
+  for (var j = 0; j < arr.length; j++) t += arr[j].v;   // is_streaming 等分量标签：求和为真值
+  return t;
+}
+function histAvg(fams, base) {
+  // histogram 的 _sum/_count：有 pp_rank → 取 max（副本），无 → 求和
+  function agg(b) {
+    var arr = fams[b]; if (!arr || !arr.length) return null;
+    var hasRank = arr.some(function (s) { return s.l.pp_rank != null; });
+    if (hasRank) { var mx = -Infinity; for (var i = 0; i < arr.length; i++) if (arr[i].v > mx) mx = arr[i].v; return mx; }
+    var t = 0; for (var j = 0; j < arr.length; j++) t += arr[j].v; return t;
+  }
+  var s = agg(base + '_sum'), c = agg(base + '_count');
+  if (s == null || c == null || c <= 0) return null;
+  return s / c;
+}
+
+function kpi(lab, val, unit, sub, color) {
+  return '<div class="kpi"><div class="lab">' + esc(lab) + '</div>'
+    + '<div class="val"' + (color ? ' style="color:' + color + '"' : '') + '>' + val + (unit ? '<small>' + esc(unit) + '</small>' : '') + '</div>'
+    + (sub ? '<div class="sub">' + sub + '</div>' : '') + '</div>';
+}
+
+function renderInstance(inst, mt, params, exportOff) {
+  var port = inst.port;
+  var host = document.getElementById('body');
+  if (mt === null) {
+    return '<div class="card"><h2>:<span class="mono">' + port + '</span> · 指标端点不可用</h2>'
+      + '<div class="note err" style="margin:0">该实例 /metrics 返回非 200 —— SGLang 启动时没带 <b>--enable-metrics</b>。'
+      + '仪表盘/本页的吞吐、KV、命中率等实时统计全部依赖此端点。在启动参数（或脚本栈 inner）加上该 flag 后重启实例即可恢复。</div></div>';
+  }
+  var f = parseMetrics(mt);
+  var g = function (b, mode) { return famValue(f, b, mode); };
+
+  // 吞吐（引擎自报实时值 + 前端差值兜底）
+  var now = Date.now();
+  var prev = _prev[port] || {};
+  var cur = {
+    t: now,
+    ppInput: g('sglang:prefill_effective_tokens_total', 'input'),
+    prompt: g('sglang:prompt_tokens_total'),
+    gen: g('sglang:generation_tokens_total'),
+    cached: (g('sglang:prefill_effective_tokens_total', 'device_hit') || 0) + (g('sglang:prefill_effective_tokens_total', 'host_hit') || 0),
+    idle: g('sglang:scheduler_idle_seconds_total'),
+  };
+  var dSec = prev.t ? (now - prev.t) / 1000 : 0;
+  var ppSpeed = (dSec > 1 && cur.ppInput != null && prev.ppInput != null) ? (cur.ppInput - prev.ppInput) / dSec : null;
+  _prev[port] = cur;
+
+  var genTps = g('sglang:gen_throughput');
+  var running = g('sglang:num_running_reqs') || 0;
+  var queue = g('sglang:num_queue_reqs') || 0;
+  var hitGauge = g('sglang:cache_hit_rate');
+  var hitCum = (cur.prompt > 0 && cur.cached != null) ? cur.cached / cur.prompt * 100 : null;
+  var usage = g('sglang:token_usage');
+  var kvUsed = g('sglang:kv_used_tokens'), kvMax = g('sglang:max_total_num_tokens');
+  var kvAvail = g('sglang:kv_available_tokens'), kvEv = g('sglang:kv_evictable_tokens');
+  var specRate = g('sglang:spec_accept_rate'), specLen = g('sglang:spec_accept_length');
+  var specSteps = g('sglang:spec_num_steps'), specDraft = g('sglang:spec_num_draft_tokens');
+  var retracted = g('sglang:num_retracted_reqs') || 0;
+  var ttft = histAvg(f, 'sglang:time_to_first_token_seconds');
+  var tpot = histAvg(f, 'sglang:inter_token_latency_seconds');
+  var e2e = histAvg(f, 'sglang:e2e_request_latency_seconds');
+  var qt = histAvg(f, 'sglang:queue_time_seconds');
+  var wGb = g('sglang:weight_memory_usage_gb'), kvGb = g('sglang:kv_cache_memory_usage_gb'), grGb = g('sglang:graph_memory_usage_gb');
+  var httpAct = g('sglang:http_requests_active'), httpTot = g('sglang:http_requests_total');
+  var idlePct = (dSec > 1 && cur.idle != null && prev.idle != null) ? ((cur.idle - prev.idle) / dSec * 100) : null;
+  var ntr = g('sglang:new_token_ratio');
+  var pageSz = g('sglang:page_size'), pages = g('sglang:num_pages');
+
+  var gpuTxt = (inst.gpu != null && inst.gpu !== '') ? ('GPU ' + inst.gpu) : 'GPU ?';
+  var html = '';
+
+  // 顶部 KPI
+  html += '<div class="grid">';
+  html += kpi('Decode 吞吐', genTps != null ? fmt(genTps) : '--', ' tok/s', 'sglang:gen_throughput 实时口径');
+  html += kpi('Prefill 吞吐', ppSpeed != null ? fmtInt(ppSpeed) : (running > 0 ? '--' : '空闲'), ' tok/s', 'mode=input 累计差值（未命中重算段）');
+  html += kpi('运行 / 排队', '<span style="color:var(--violet)">' + running + '</span><small>/</small>' + queue, '', running > 0 ? '本帧有活跃请求' : '调度器空闲' + (idlePct != null ? '（idle ' + fmt(idlePct, 0) + '%）' : ''));
+  var hitVal = hitGauge != null && hitGauge > 0 ? fmt(hitGauge, 1) : (hitCum != null ? fmt(hitCum, 1) : '--');
+  var hitSrc = hitGauge != null && hitGauge > 0 ? 'cache_hit_rate（窗口）' : '累计 cached/prompt';
+  html += kpi('前缀缓存命中', hitVal, '%', 'radix cache · ' + hitSrc + (hitGauge != null && hitGauge > 0 && hitCum != null ? '（累计 ' + fmt(hitCum, 1) + '%）' : ''));
+  html += '</div>';
+
+  // KV 池
+  var usagePct = usage != null ? Math.min(100, usage * 100) : (kvMax > 0 && kvUsed != null ? kvUsed / kvMax * 100 : null);
+  html += '<div class="card"><h2>KV 池（显存 radix cache）</h2>';
+  if (kvMax) {
+    html += '<div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px">'
+      + '<span>在用 <b class="mono">' + fmtInt(kvUsed) + '</b> tok</span>'
+      + '<span>可用 <b class="mono">' + fmtInt(kvAvail) + '</b></span>'
+      + '<span>可驱逐 <b class="mono">' + fmtInt(kvEv) + '</b></span>'
+      + '<span>容量 <b class="mono">' + fmtInt(kvMax) + '</b> tok</span>'
+      + (pageSz ? '<span>page <b class="mono">' + fmtInt(pageSz) + '</b>' + (pages ? ' × ' + fmtInt(pages) : '') + '</span>' : '')
+      + (ntr != null ? '<span>new_token_ratio <b class="mono">' + fmt(ntr, 3) + '</b></span>' : '')
+      + '</div><div class="bar"><i style="width:' + (usagePct == null ? 0 : usagePct.toFixed(1)) + '%"></i></div>'
+      + '<div class="sub" style="font-size:11px;color:var(--text-tertiary);margin-top:4px">占用 ' + fmt(usagePct, 1) + '%（token_usage gauge 口径：树内常驻+在飞占比）</div>';
+  } else {
+    html += '<div style="font-size:12px;color:var(--text-tertiary)">尚无 KV 池指标（引擎冷启动加载中或指标缺失）</div>';
+  }
+  html += '</div>';
+
+  // 两段：投机+延迟 | 参数
+  html += '<div class="card"><h2>运行时明细 <span class="tag">:' + port + ' · ' + esc(gpuTxt) + '</span></h2>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:4px 26px">'
+    + '<table>'
+    + '<tr><th>投机接受率</th><th>接受长度</th><th>steps×draft</th><th>撤回</th></tr>'
+    + '<tr><td>' + (specRate != null && specRate > 0 ? fmt(specRate * 100, 1) + '%' : '--') + '</td>'
+    + '<td>' + (specLen != null && specLen > 0 ? fmt(specLen, 2) : '--') + '</td>'
+    + '<td>' + (specSteps && specDraft ? fmtInt(specSteps) + '×' + fmtInt(specDraft) : '--') + '</td>'
+    + '<td style="color:' + (retracted > 0 ? 'var(--orange)' : 'inherit') + '">' + retracted + '</td></tr>'
+    + '</table>'
+    + '<table>'
+    + '<tr><th>TTFT</th><th>TPOT</th><th>E2E</th><th>排队</th></tr>'
+    + '<tr><td>' + (ttft != null ? fmt(ttft * 1000, 0) + ' ms' : '--') + '</td>'
+    + '<td>' + (tpot != null ? fmt(tpot * 1000, 1) + ' ms' : '--') + '</td>'
+    + '<td>' + (e2e != null ? fmt(e2e, 2) + ' s' : '--') + '</td>'
+    + '<td>' + (qt != null ? fmt(qt * 1000, 0) + ' ms' : '--') + '</td></tr>'
+    + '</table>'
+    + '<table>'
+    + '<tr><th>权重</th><th>KV</th><th>图捕获</th><th>HTTP 在飞/总</th></tr>'
+    + '<tr><td>' + (wGb ? fmt(wGb, 1) + ' GB' : '--') + '</td>'
+    + '<td>' + (kvGb ? fmt(kvGb, 1) + ' GB' : '--') + '</td>'
+    + '<td>' + (grGb ? fmt(grGb, 1) + ' GB' : '--') + '</td>'
+    + '<td>' + fmtInt(httpAct) + ' / ' + fmtInt(httpTot) + '</td></tr>'
+    + '</table>'
+    + '<table>'
+    + (params && params.runtime === 'sglang' ? (function (p) {
+      var rows = [];
+      rows.push('<tr><th>上下文</th><th>并发</th><th>显存比例</th><th>投机</th></tr>');
+      rows.push('<tr><td>' + fmtInt(p.max_model_len) + '</td><td>' + (p.max_num_seqs != null ? p.max_num_seqs : '--') + '</td><td>' + (p.gpu_memory_utilization != null ? fmt(p.gpu_memory_utilization, 2) : '--') + '</td><td>' + (p.speculative_config && p.speculative_config.method ? esc(String(p.speculative_config.method)) + '×' + (p.speculative_config.num_speculative_tokens || '?') : '关闭') + '</td></tr>');
+      rows.push('<tr><th>采样 t/p/k</th><th>min_p</th><th>pp / rp</th><th>思考</th></tr>');
+      rows.push('<tr><td>' + fmt(p.temperature, 2) + ' / ' + fmt(p.top_p, 2) + ' / ' + (p.top_k != null ? p.top_k : '--') + '</td><td>' + fmt(p.min_p, 2) + '</td><td>' + (p.presence_penalty != null ? fmt(p.presence_penalty, 2) : '--') + ' / ' + fmt(p.repetition_penalty, 2) + '</td><td>' + (p.thinking ? '开启 · ' + esc(p.thinkingEffort || '') : '关闭') + '</td></tr>');
+      return rows.join('');
+    })(params) : '<tr><td colspan="4" style="color:var(--text-tertiary)">引擎参数未取到</td></tr>')
+    + '</table>'
+    + '</div></div>';
+
+  // 累计 token
+  html += '<div class="card"><h2>累计吞吐（rank0 口径，PP 双 stage 不重复计数）</h2><table>'
+    + '<tr><th>Prompt</th><th>缓存命中</th><th>生成</th><th>平均输出/请求</th></tr>'
+    + (function () {
+      var done = famValue(f, 'sglang:num_requests_total') || 0;
+      return '<tr><td>' + fmtInt(cur.prompt) + ' tok</td>'
+        + '<td>' + fmtInt(cur.cached) + ' tok' + (cur.prompt > 0 ? '（' + fmt(cur.cached / cur.prompt * 100, 1) + '%）' : '') + '</td>'
+        + '<td>' + fmtInt(cur.gen) + ' tok</td>'
+        + '<td>' + (done > 0 ? fmt(cur.gen / done, 0) + ' tok' : '--') + '（' + fmtInt(done) + ' 请求）</td></tr>';
+    })()
+    + '</table></div>';
+  return html;
+}
+
+function render(mmInsts, metricMap, paramMap, exportOff, mmErr, stale) {
+  var body = document.getElementById('body');
+  var bar = document.getElementById('instBar');
+  var notes = document.getElementById('notes');
+  var sgInsts = mmInsts.filter(function (i) { return i.runtime === 'sglang'; });
+  safeRun(function () {
+    bar.innerHTML = sgInsts.length
+      ? sgInsts.map(function (i) { return '<span class="inst-badge">sglang :' + i.port + ' · ' + esc(i.model || '?') + (i.gpu != null && i.gpu !== '' ? ' · GPU' + esc(i.gpu) : '') + '</span>'; }).join('')
+        + mmInsts.filter(function (i) { return i.runtime !== 'sglang'; }).map(function (i) { return '<span class="inst-badge off">' + esc(i.runtime || '?') + ' :' + i.port + '</span>'; }).join('')
+      : (stale
+        // 取数失败 ≠ 没有实例（10-03 修复：原先此处直接打「无运行中实例」）
+        ? '<span class="inst-badge off">数据获取失败 · 保留上次画面</span>'
+        : '<span class="inst-badge off">无运行中实例</span>');
+  });
+  safeRun(function () {
+    var n = '';
+    if (mmErr) n += '<div class="note err">实例发现接口异常：' + esc(mmErr) + '</div>';
+    if (sgInsts.length && Array.isArray(exportOff) && exportOff.length) {
+      n += '<div class="note warn">端口 ' + exportOff.join(' / ') + ' 的 SGLang 实例未启用 <b>--export-metrics-to-file</b>：逐请求记录不落盘，管理台「最近完成请求」表将无该实例数据（本页实时指标不受影响）。需要时给启动命令加该 flag。</div>';
+    }
+    notes.innerHTML = n;
+  });
+  if (!sgInsts.length) {
+    if (stale) {
+      // 本轮没拿到可信数据：正文保持上一帧原样（不能用空 metricMap 重渲染，
+      // parseMetrics(undefined) 会抛错把整轮 tick 打死、时间戳也停更）。
+      if (!body.innerHTML) {
+        body.innerHTML = '<div class="empty"><div class="big">⚠️</div>暂时取不到实例数据（model-manager 超时或未响应）。'
+          + '<div style="margin-top:6px;font-size:12px">页面每 2s 自动重试，恢复后自动显示。</div></div>';
+      }
+      return;
+    }
+    body.innerHTML = '<div class="empty"><div class="big">🟣</div>当前没有运行中的 SGLang 实例。'
+      + '<div style="margin-top:6px;font-size:12px">在「模型管理」把运行时选为 SGLang 启动实例后，本页自动出现其专属指标。</div>'
+      + '<button onclick="try{parent.switchTab(\'models\')}catch(e){}">去模型管理</button></div>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < sgInsts.length; i++) {
+    var inst = sgInsts[i];
+    html += '<div style="margin:4px 0 10px"><span class="tag" style="font-size:12px;padding:5px 12px">:' + inst.port + ' · ' + esc(inst.model || '') + '</span></div>';
+    html += renderInstance(inst, metricMap[inst.port], paramMap[inst.port], exportOff);
+  }
+  body.innerHTML = html;
+}
+
+// 保留上一帧画面的降级渲染：正文一律不动，只更新徽章与提示条，
+// 时间戳改标「上次成功」时刻。
+function renderStale(msg) {
+  safeRun(function () {
+    var bar = document.getElementById('instBar');
+    if (_lastGood.length) {
+      bar.innerHTML = _lastGood.filter(function (i) { return i.runtime === 'sglang'; }).map(function (i) {
+        return '<span class="inst-badge off">sglang :' + i.port + ' · ' + esc(i.model || '?') + ' · 数据暂不可用</span>';
+      }).join('');
+    }
+    var notes = document.getElementById('notes');
+    notes.innerHTML = '<div class="note warn">' + esc(msg) + '</div>';
+  });
+  document.getElementById('stamp').textContent = '数据获取失败 · 上次成功 '
+    + (_lastGoodAt ? new Date(_lastGoodAt).toLocaleTimeString() : '--');
+}
+function stampFresh() {
+  document.getElementById('stamp').textContent = '更新于 ' + new Date().toLocaleTimeString() + ' · 每 ' + (POLL_MS / 1000) + 's';
+}
+
+function tick() {
+  if (_busy) { return; }
+  _busy = true;
+  var t0 = Date.now();
+  fetchT('/v1/internal/model-manager', MM_TIMEOUT_MS).then(function (r) { return r.json(); }).catch(function (e) { console.warn('[sglang-page] model-manager failed:', (e && e.name) || e); return null; })
+    .then(function (mm) {
+      var insts = (mm && mm.instances) || [];
+      var sgs = insts.filter(function (i) { return i.runtime === 'sglang'; });
+      var metricMap = {}, paramMap = {};
+      var jobs = [];
+      for (var i = 0; i < sgs.length; i++) {
+        (function (p) {
+          jobs.push(fetchT('/v1/internal/metrics?port=' + p, 8000).then(function (r) {
+            return r.ok ? r.text() : null;   // 404/5xx → null（未启用 --enable-metrics 的显式判据）
+          }, function () { return null; }).then(function (t) { metricMap[p] = t; }));
+          jobs.push(fetchT('/v1/internal/model-params', 8000).then(function (r) { return r.json(); }, function () { return null; })
+            .then(function (d) {
+              var arr = (d && d.instances) || [];
+              for (var k = 0; k < arr.length; k++) if (arr[k].port === p) { paramMap[p] = arr[k]; break; }
+            }));
+        })(sgs[i].port);
+      }
+      jobs.push(fetchT('/v1/internal/recent-requests?limit=20', 8000).then(function (r) { return r.json(); }, function () { return null; })
+        .then(function (d) { window.__sglExportOff = (d && d.sglang_export_off) || null; }));
+      return Promise.all(jobs).then(function () {
+        return { insts: insts, metricMap: metricMap, paramMap: paramMap, gotData: !!(mm && Array.isArray(mm.instances)) };
+      });
+    })
+    .then(function (res) {
+      if (!res) { return; }
+      if (!res.gotData) {
+        renderStale('model-manager 本轮不可达（超时或响应不完整），已保留上次画面');
+        return;
+      }
+      var mine = res.insts.filter(function (i) { return i.runtime === 'sglang'; });
+      if (mine.length) {
+        _lastGood = mine; _lastGoodAt = Date.now(); _emptySince = 0;
+        render(res.insts, res.metricMap, res.paramMap, window.__sglExportOff, null, false);
+        stampFresh();
+      } else if (!_lastGood.length) {
+        render(res.insts, res.metricMap, res.paramMap, window.__sglExportOff, null, false);
+        stampFresh();
+      } else if (Date.now() - _emptySince >= EMPTY_GRACE_MS) {
+        _emptySince = 0; _lastGood = [];
+        render(res.insts, res.metricMap, res.paramMap, window.__sglExportOff, null, false);
+        stampFresh();
+      } else {
+        if (!_emptySince) { _emptySince = Date.now(); }
+        renderStale('本轮未发现 SGLang 实例（疑似上游探测抖动），保留上次画面；连续 '
+          + Math.ceil((EMPTY_GRACE_MS - (Date.now() - _emptySince)) / 1000) + 's 仍为空则判定已停止');
+      }
+    })
+    .catch(function (e) { console.warn('[sglang-page] tick failed:', e); })
+    .then(function () { _busy = false; _lastTickAt = Date.now(); schedule(); });
+}
+function schedule() {
+  if (_timer) clearTimeout(_timer);
+  if (document.hidden) return;   // 后台标签暂停；回前台事件里补刷
+  _timer = setTimeout(tick, POLL_MS);
+}
+document.addEventListener('visibilitychange', function () {
+  if (!document.hidden) { tick(); }
+});
+// 看门狗：判据 = 最后一次成功走完一轮 tick 的时刻（09-23 铁律：不能以请求成败为准）
+setInterval(function () {
+  if (document.hidden) return;
+  if (Date.now() - _lastTickAt > POLL_MS * 4) { _busy = false; tick(); }
+}, 2000);
+tick();
+</script>
+</body>
+</html>

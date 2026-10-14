@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-14（下午）— ★vLLM 管理台（8889 控制台）全量现行版入库 `console-8889/`
+
+- 此前仓库只收了控制台的两段补丁史（`console-ui/`，10-03 vLLM 标签页）；本次把部署机
+  `/home/ll/deploy` 的**现行整体快照**入库：`server.js`（809 KB，零 npm 依赖）+ `index.html`
+  （PAGE_VERSION `20261014-r43`）+ 六页面（vllm/sglang/strata-monitor/bench/mobile/cpu）+
+  `static/`（tailwind.js + fonts + chart + crash.html，**缺 static=布局整体崩**，09-19 实锤）+
+  `crash-watch.mjs` 崩溃守护 + `gpu-ctl`/`cpu-ctl` 白名单提权脚本 + systemd 单元 + 配置样例。
+- 脱敏（与生产逐字节差异仅此三类，README §3 有对账口径）：Strata 远端缺省内网 IP → RFC5737
+  文档段 `192.0.2.38/.255`；`strata-remote.json`（含 MAC）与
+  `console-auth.json`（口令门禁）不入库；运行时状态/数据文件不入库。门禁：`node --check` ×2、
+  `bash -n` ×2、7 个 JSON 解析、全目录口令字面与内网 IP 段复扫 0 命中。
+- 部署口径写进 `console-8889/README.md` §2：node≥20、sudoers 五件套按需、`KillMode=process`
+  必须保留、linger 启用、`/static/tailwind.js` 必须 200 的验收判据。
+
 ## 2026-10-14 — ★二级缓存稳定版（CPU KV 二级缓存生产定型：#14 修 load 跨流崩溃 + #12 每请求命中真值 + 160GiB 档）
 
 - **稳定性定案**：rt-patch **#14**（`dsh_simple_offload_rt.py`）修掉二级缓存 load 路径的间歇

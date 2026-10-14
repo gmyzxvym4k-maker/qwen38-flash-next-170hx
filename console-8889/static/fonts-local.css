@@ -1,0 +1,6 @@
+/* 控制台自托管字体（离线可用，不发外网请求）：Inter（正文） + IBM Plex Mono（数据） */
+@font-face{font-family:'Inter';font-style:normal;font-weight:300 800;font-display:swap;src:url('/static/fonts/inter-latin-var.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/ibm-plex-mono-latin-400.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:500;font-display:swap;src:url('/static/fonts/ibm-plex-mono-latin-500.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:600;font-display:swap;src:url('/static/fonts/ibm-plex-mono-latin-600.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:700;font-display:swap;src:url('/static/fonts/ibm-plex-mono-latin-700.woff2') format('woff2');}

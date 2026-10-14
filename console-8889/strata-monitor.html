@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Strata 监控 · 远端引擎</title>
+<style>
+/* 主题对齐控制台（indigo 浅色，同 cpu.html/bench.html 口径）；功能克隆 Strata Web UI Monitor 页
+   （http://192.0.2.38:8080/#monitor），数据走控制台代理 /v1/internal/strata-remote */
+:root{--bg:#f1f5f9;--panel:#ffffff;--panel2:#f8fafc;--bd:#e2e8f0;--bd2:#cbd5e1;--tx:#0f172a;--tx2:#475569;--tx3:#94a3b8;--ac:#6366f1;--ac2:#eef2ff;--ok:#059669;--warn:#b45309;--bad:#dc2626;--blue:#2563eb;--mono:'SF Mono',Consolas,monospace;--sh:0 1px 3px rgba(28,42,70,.06),0 4px 14px rgba(28,42,70,.05)}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font:14px/1.6 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif;padding:14px 16px}
+header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:2px}
+h1{font-size:21px;font-weight:700;letter-spacing:.3px}
+h1 .logo{color:var(--ac)}
+.sub{color:var(--tx2);font-size:12px;margin-bottom:14px}
+.sub code{font:12px var(--mono);background:var(--panel);border:1px solid var(--bd);border-radius:5px;padding:1px 6px}
+#pill{display:inline-flex;align-items:center;gap:7px;padding:4px 12px;border-radius:14px;border:1px solid var(--bd);background:var(--panel);font-size:12.5px;font-weight:600;color:var(--tx2)}
+#pill .dot{width:8px;height:8px;border-radius:50%;background:var(--tx3)}
+#pill[data-s=reading]{color:var(--blue);border-color:#bfdbfe;background:#eff6ff}#pill[data-s=reading] .dot{background:var(--blue)}
+#pill[data-s=generating]{color:var(--ok);border-color:#a7f3d0;background:#ecfdf5}#pill[data-s=generating] .dot{background:var(--ok)}
+#pill[data-s=queued]{color:var(--warn);border-color:#fde68a;background:#fffbeb}#pill[data-s=queued] .dot{background:var(--warn)}
+#pill[data-s=error]{color:var(--bad);border-color:#fecaca;background:#fef2f2}#pill[data-s=error] .dot{background:var(--bad)}
+#ts{margin-left:auto;font-size:12px;color:var(--tx3);font-variant-numeric:tabular-nums}
+#errBar{display:none;margin:8px 0;padding:10px 14px;border-radius:8px;background:rgba(180,83,9,.08);border:1px solid rgba(180,83,9,.4);color:var(--warn);font-size:12.5px;line-height:1.6;white-space:pre-wrap;word-break:break-all}
+.card{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:15px 17px;margin-bottom:16px;box-shadow:var(--sh)}
+.card h3{font-size:12px;color:var(--tx2);letter-spacing:1.5px;margin-bottom:12px;font-weight:600}
+.muted{color:var(--tx3)}
+.small{font-size:11.5px}
+/* 模型状态卡 */
+#stateBadges{display:inline-flex;gap:6px;margin-left:10px}
+.badge{display:inline-block;padding:2px 9px;border-radius:11px;font-size:11px;font-weight:600;border:1px solid var(--bd);color:var(--tx3);background:var(--panel2)}
+.badge.on{border-color:transparent}
+.badge[data-s=idle].on{background:#f1f5f9;color:var(--tx2);border-color:var(--bd2)}
+.badge[data-s=reading].on{background:#dbeafe;color:var(--blue)}
+.badge[data-s=generating].on{background:#d1fae5;color:var(--ok)}
+.badge[data-s=queued].on{background:#fef3c7;color:var(--warn)}
+.badge[data-s=error].on{background:#fee2e2;color:var(--bad)}
+#stateRow{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin:6px 0 8px}
+#stateLabel{font-weight:700;font-size:15px}
+.prog{height:7px;border-radius:5px;background:var(--panel2);border:1px solid var(--bd);overflow:hidden}
+.prog>i{display:block;height:100%;background:var(--ac);border-radius:5px;transition:width .4s}
+.prog[data-tone=info]>i{background:var(--blue)}
+.prog[data-tone=warn]>i{background:var(--warn)}
+.prog[data-tone=danger]>i{background:var(--bad)}
+/* 指标卡 */
+#metrics{display:grid;grid-template-columns:repeat(auto-fill,minmax(158px,1fr));gap:10px;margin-bottom:16px}
+.mcard{background:var(--panel);border:1px solid var(--bd);border-radius:11px;padding:11px 13px;box-shadow:var(--sh)}
+.mcard .mlabel{font-size:11.5px;color:var(--tx2);font-weight:600}
+.mval{font-size:21px;font-weight:800;font-variant-numeric:tabular-nums;margin-top:2px;line-height:1.25}
+.mval small{font-size:11px;color:var(--tx3);font-weight:600;margin-left:3px}
+.msub{font-size:11px;color:var(--tx3);min-height:15px}
+.speed2{display:flex;gap:14px;align-items:baseline}
+.speed2 .pf{font-size:14px;font-weight:700;color:var(--blue);font-variant-numeric:tabular-nums}
+.spark{width:100%;height:32px;margin-top:5px;display:block;color:var(--ac)}
+.spark[data-tone=warn]{color:var(--warn)}.spark[data-tone=info]{color:var(--blue)}
+.spark .area{fill:currentColor;opacity:.12}.spark .line{fill:none;stroke:currentColor;stroke-width:1.6;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
+.spark .pf-line{color:var(--blue)}
+/* 两列行 */
+.row2{display:grid;grid-template-columns:minmax(0,340px) minmax(0,1fr);gap:16px;align-items:start}
+@media(max-width:1080px){.row2{grid-template-columns:1fr}}
+/* 上下文仪表 */
+.gaugeWrap{display:flex;align-items:center;gap:14px;margin-bottom:12px}
+.gauge{width:110px;height:110px;flex:none}
+.gauge .track{stroke:var(--bd)}
+.gauge .fill{stroke:var(--ac);transition:stroke-dasharray .4s}
+.gaugeLab .pct{font-size:24px;font-weight:800;font-variant-numeric:tabular-nums}
+.barRow{display:flex;justify-content:space-between;font-size:12.5px;margin:9px 0 4px}
+.barRow .v{color:var(--tx2);font-variant-numeric:tabular-nums}
+/* 请求表 */
+.tblWrap{overflow:auto;max-height:340px}
+.tblWrap.all{max-height:1200px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{position:sticky;top:0;background:var(--panel2);color:var(--tx2);font-size:11px;letter-spacing:.5px;text-align:left;padding:6px 8px;border-bottom:1px solid var(--bd);white-space:nowrap}
+td{padding:6px 8px;border-bottom:1px dashed var(--bd);white-space:nowrap}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+tr:last-child td{border-bottom:none}
+.btn{display:inline-block;background:#fff;border:1px solid var(--bd2);color:var(--tx);border-radius:8px;padding:5px 12px;font-size:12.5px;cursor:pointer;transition:.15s;font-weight:500}
+.btn:hover{border-color:var(--ac);color:var(--ac)}
+.btn.pwr.primary{border-color:var(--ac);color:var(--ac);background:var(--ac2)}
+.btn.pwr.danger{border-color:#fecaca;color:var(--bad)}
+.btn.pwr.danger:hover{background:#fef2f2;border-color:var(--bad)}
+.btn:disabled{opacity:.5;cursor:wait}
+.reqHead{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.reqHead h3{margin-bottom:0}
+/* 事实表 */
+dl.facts{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:12.5px;margin-top:8px}
+dl.facts dt{color:var(--tx2)}
+dl.facts dd{font-weight:600;font-variant-numeric:tabular-nums}
+/* MCP */
+.mcpSrv{border:1px solid var(--bd);border-radius:9px;padding:9px 12px;margin-top:8px}
+.mcpSrv .head{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.chip{display:inline-block;background:var(--ac2);color:var(--ac);border-radius:6px;padding:1px 7px;font-size:11px;margin:3px 3px 0 0}
+.msgError{color:var(--bad);font-size:12px;margin-top:5px}
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="logo">Strata</span> 监控</h1>
+  <span id="pill" data-s="idle"><span class="dot"></span><span id="pillText">连接中…</span></span>
+  <span id="ts">--</span>
+</header>
+<div class="sub" id="meta">目标 <code>--</code> · 克隆自 Strata Web UI Monitor（每 1s 自动刷新，后台标签页自动暂停）</div>
+<div id="errBar"></div>
+
+<!-- 电源控制：网络唤醒（魔术包，控制台机代发）/ 远程启动 Strata / 远程关机（ssh 免密，密钥在 .38 administrators_authorized_keys） -->
+<div class="card" id="pwrCard">
+  <h3>电源控制 <span class="muted" style="letter-spacing:0;font-weight:400">目标 192.0.2.38 · MAC/地址见 strata-remote.json（改配置即热生效）</span></h3>
+  <div id="pwrBtns" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    <button class="btn pwr" id="pwrWake" onclick="pwrPost('wake',this)">⚡ 网络唤醒</button>
+    <button class="btn pwr primary" id="pwrBat" onclick="pwrPost('startbat',this)">▶ 启动/重启 Strata（start-strata-0140.bat）</button>
+    <button class="btn pwr danger" id="pwrOff" onclick="pwrPost('shutdown',this)">⏻ 关机</button>
+    <span id="pwrMsg" class="small" style="color:var(--tx3)"></span>
+  </div>
+  <p class="muted small" style="margin-top:8px">唤醒=UDP9 魔术包（网卡已在 wake_armed 列）；启动/重启=先杀旧实例再跑指定 bat（保证跑的就是脚本里的配置）；关机立即执行——<b style="color:var(--warn)">跑在这台机上的推理服务（含正在对话的 AI 会话）会一并中断</b>；启动后模型加载 2~6 分钟，页面自动转绿。</p>
+</div>
+
+<!-- 模型状态 -->
+<div class="card">
+  <h3>模型状态 <span id="stateBadges">
+    <span class="badge" data-s="idle">空闲</span><span class="badge" data-s="reading">读取提示</span>
+    <span class="badge" data-s="generating">生成中</span><span class="badge" data-s="queued">排队</span>
+    <span class="badge" data-s="error">错误</span></span></h3>
+  <div id="stateRow"><span id="stateLabel">等待请求</span><span class="muted" id="stateDetail"></span></div>
+  <div class="prog" id="stateProg"><i id="stateBar" style="width:0%"></i></div>
+</div>
+
+<!-- 八张指标卡（Speed 双值：Decode + Prefill） -->
+<div id="metrics"></div>
+
+<div class="row2">
+  <!-- 上下文占用 -->
+  <div class="card">
+    <h3>上下文占用</h3>
+    <div class="gaugeWrap">
+      <svg class="gauge" viewBox="0 0 120 120" aria-hidden="true">
+        <circle class="track" cx="60" cy="60" r="50" fill="none" stroke-width="10" stroke-linecap="round" stroke-dasharray="235.6 314.2" transform="rotate(135 60 60)"/>
+        <circle class="fill" id="ctxFill" cx="60" cy="60" r="50" fill="none" stroke-width="10" stroke-linecap="round" stroke-dasharray="0 314.2" transform="rotate(135 60 60)"/>
+      </svg>
+      <div class="gaugeLab"><div class="pct" id="ctxPct">0%</div><div class="muted small" id="ctxSub">–</div></div>
+    </div>
+    <div class="barRow"><span>专家缓存（显存）</span><span class="v" id="slotsText">–</span></div>
+    <div class="prog"><i id="slotsBar" style="width:0%"></i></div>
+    <div class="barRow"><span>系统内存</span><span class="v" id="ramText">–</span></div>
+    <div class="prog" id="ramProg"><i id="ramBar" style="width:0%"></i></div>
+    <div class="barRow"><span>GPU 温度</span><span class="v" id="tempText">–</span></div>
+    <div class="prog" data-tone="warn"><i id="tempBar" style="width:0%"></i></div>
+  </div>
+  <!-- 最近请求 -->
+  <div class="card">
+    <div class="reqHead"><h3>最近请求</h3><button class="btn" id="reqAll" hidden>显示全部</button></div>
+    <div class="tblWrap" id="reqWrap">
+      <table><thead><tr><th>时间</th><th>状态</th><th class="num">提示</th><th class="num">复用</th><th class="num">输出</th>
+        <th class="num">Tok/s</th><th class="num" title="写答案期间：查找的专家中已在显存的比例。经 PCIe 读取的专家（--pcie-frac）不计入其内，其占全部路由专家的比例显示在后面（+N% PCIe）">显存命中率</th><th class="num">耗时</th></tr></thead>
+      <tbody id="reqBody"><tr><td colspan="8" class="muted">暂无请求</td></tr></tbody></table>
+    </div>
+    <p class="muted small" id="reqTotals" style="margin-top:8px"></p>
+  </div>
+</div>
+
+<!-- 会话缓存 -->
+<div class="card" id="ccCard" hidden>
+  <div class="reqHead"><h3>会话缓存</h3><span class="muted small" id="ccSum"></span></div>
+  <div id="ccBars" hidden style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+    <div><div class="barRow"><span>停放会话数</span><span class="v" id="ccSlotsText">–</span></div>
+      <div class="prog"><i id="ccSlotsBar" style="width:0%"></i></div></div>
+    <div><div class="barRow"><span>其内存占用（RAM）</span><span class="v" id="ccMemText">–</span></div>
+      <div class="prog"><i id="ccMemBar" style="width:0%"></i></div></div>
+  </div>
+  <dl class="facts" id="ccFacts"></dl>
+  <p class="muted small" id="ccNote" style="margin-top:8px"></p>
+</div>
+
+<!-- MCP 服务器 -->
+<div class="card" id="mcpCard" hidden>
+  <div class="reqHead"><h3>MCP 服务器</h3><span class="muted small" id="mcpSum"></span></div>
+  <div id="mcpList"></div>
+  <p class="muted small" style="margin-top:8px">其工具在远端 PC 上以该服务权限运行，由模型在对话中自行决定调用。</p>
+</div>
+
+<script>
+/* 克隆 Strata Web UI Monitor（app.js renderMonitor/renderConvCache/renderMcp 语义 1:1），
+   数据走控制台代理 GET /v1/internal/strata-remote（?requests=all 为全量请求表）。
+   前端铁律（09-23/09-25/10-03）：
+   · 轮询用独立 setInterval，每拍自成一体——渲染抛错（safeRun 吞）不影响下一拍续排；
+   · fetch 超时自建 AbortController + setTimeout，settle 时 clearTimeout（禁 AbortSignal.timeout）；
+   · 取数失败（ok:false / reject）：保留上一帧画面 + 黄条 + 时间戳标「上次成功」，绝不用空帧重渲染；
+   · 后台标签页停轮询（document.hidden 门控），回前台立即补一拍。 */
+'use strict';
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmt(n,d){ if(n==null||n===undefined||n==='') return '–'; const x=Number(n); if(!isFinite(x)) return '–'; return x.toLocaleString('en-US',{minimumFractionDigits:d||0,maximumFractionDigits:d||0}); }
+function gb(b,d){ if(b==null) return '–'; return fmt(b/1073741824, d==null?1:d); }
+function kfmt(n){ if(n==null) return '–'; if(n>=1048576) return fmt(n/1048576, n%1048576?1:0)+'M'; if(n>=1000) return fmt(Math.round(n/1000))+'K'; return fmt(n); }
+function since(t){ if(!t) return ''; const s=Math.max(0,Date.now()/1000-t); return s<60?'刚刚':s<3600?fmt(s/60)+' 分钟前':fmt(s/3600,1)+' 小时前'; }
+function safeRun(fn){ try{ fn(); }catch(e){ console.error('strataMon render:',e); } }
+
+// ---- 指标卡定义（同 Strata METRICS 八张）----
+const METRICS=[
+  {key:'speed',label:'速度',unit:'t/s',series:'tok_s'},
+  {key:'gpu',label:'GPU 负载',unit:'%',series:'gpu_util',max:100},
+  {key:'vram',label:'显存',unit:'GB',series:'gpu_mem_used'},
+  {key:'temp',label:'GPU 温度',unit:'°C',series:'gpu_temp',tone:'warn'},
+  {key:'power',label:'功耗',unit:'W',series:'gpu_power'},
+  {key:'pcie',label:'PCIe',unit:'',series:'gpu_pcie_rx_mb',tone:'info'},
+  {key:'cpu',label:'CPU',unit:'%',series:'cpu',max:100},
+  {key:'disk',label:'磁盘读取',unit:'MB/s',series:'disk_read_mb',tone:'info'},
+];
+$('metrics').innerHTML=METRICS.map((m)=>`
+  <div class="mcard"><span class="mlabel">${esc(m.label)}</span>
+    ${m.key==='speed'?`<div class="speed2"><div><div class="mval"><span id="mv-speed">–</span><small>t/s</small></div><div class="msub" id="ms-speed">Decode</div></div>
+      <div class="pf"><span id="mv-prefill">–</span><small style="font-size:10px;color:var(--tx3)"> t/s</small><div class="msub" id="ms-prefill">Prefill</div></div></div>`
+      :`<div class="mval"><span id="mv-${m.key}">–</span>${m.unit?`<small>${esc(m.unit)}</small>`:''}</div><div class="msub" id="ms-${m.key}"></div>`}
+    <svg class="spark" id="sp-${m.key}" viewBox="0 0 100 32" preserveAspectRatio="none"${m.tone?` data-tone="${m.tone}"`:''}>
+      <path class="area"/><path class="line"/>
+      ${m.key==='speed'?`<g class="pf-line"><path class="area" id="sp-prefill-area"/><path class="line" id="sp-prefill-line"/></g>`:''}</svg>
+  </div>`).join('');
+
+function spark(id,values,max){
+  const svg=$(('sp-'+id)); if(!svg) return;
+  const line=svg.querySelector('.line'), area=svg.querySelector('.area');
+  const v=(values||[]).map((x)=>(x==null?0:x));
+  if(v.length<2){ line.setAttribute('d',''); area.setAttribute('d',''); return; }
+  const top=Math.max(max||0,...v,1e-9);
+  const pts=v.map((x,i)=>[(i/(v.length-1))*100,30-(x/top)*26]);
+  const d=pts.map((p,i)=>`${i?'L':'M'}${p[0].toFixed(2)},${p[1].toFixed(2)}`).join('');
+  line.setAttribute('d',d); area.setAttribute('d',`${d}L100,32L0,32Z`);
+}
+function sparkPrefill(values){
+  const line=$('sp-prefill-line'), area=$('sp-prefill-area');
+  if(!line||!area) return;
+  const v=(values||[]).map((x)=>(x==null?0:x));
+  if(v.length<2){ line.setAttribute('d',''); area.setAttribute('d',''); return; }
+  const top=Math.max(...v,1e-9);
+  const pts=v.map((x,i)=>[(i/(v.length-1))*100,30-(x/top)*26]);
+  const d=pts.map((p,i)=>`${i?'L':'M'}${p[0].toFixed(2)},${p[1].toFixed(2)}`).join('');
+  line.setAttribute('d',d); area.setAttribute('d',`${d}L100,32L0,32Z`);
+}
+function setMetric(key,value,unit,sub){
+  const v=$('mv-'+key); if(!v) return;
+  v.innerHTML=value==null?'–':`${esc(value)}${unit?`<small>${esc(unit)}</small>`:''}`;
+  const s=$('ms-'+key); if(s) s.textContent=sub||'';
+}
+function setPill(state,text){
+  const p=$('pill'); p.dataset.state=state; $('pillText').textContent=text;
+}
+function facts(el,rows){
+  el.innerHTML=rows.filter((r)=>r[1]!=null&&r[1]!=='').map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+}
+
+// ---- 轮询（1s；每拍自成一体；失败保留上一帧）----
+let reqShowAll=false, lastOkAt=0, failures=0, monTimer=null;
+function monUrl(){ return '/v1/internal/strata-remote'+(reqShowAll?'?requests=all':''); }
+function monTick(){
+  if(document.hidden) return;
+  const ac=new AbortController();
+  const timer=setTimeout(()=>ac.abort(),6000);
+  fetch(monUrl(),{signal:ac.signal,headers:{Accept:'application/json'}})
+    .then((r)=>{ clearTimeout(timer); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+    .then((d)=>{ safeRun(()=>{ if(d&&d.ok===false) showErr(d.msg||'取数失败'); else if(d&&d.metrics) { hideErr(); lastOkAt=d.ts||Date.now(); render(d); } }); })
+    .catch((e)=>{ clearTimeout(timer); showErr('代理请求失败：'+String((e&&e.message)||e)); })
+    .finally(()=>{ stampTs(); });
+}
+function showErr(msg){
+  failures++;
+  const b=$('errBar'); b.style.display='block';
+  b.textContent=(failures>=3?'远端 Strata 持续不可达':'取数失败（保留上一帧画面）')+'：'+msg;
+  if(failures>=3) setPill('error','远端不可达');
+}
+function hideErr(){
+  failures=0; $('errBar').style.display='none';
+}
+function stampTs(){
+  const t=$('ts');
+  if(lastOkAt){ const d=new Date(lastOkAt); t.textContent='数据 '+d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})+(failures>0?'（上次成功）':''); }
+}
+function startMon(){ if(!monTimer) monTimer=setInterval(monTick,1000); monTick(); }
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) monTick(); });
+
+// ---- 渲染（renderMonitor 语义克隆）----
+function render(d){
+  const m=d.metrics, live=m.live||{}, hw=m.hardware||{}, st=m.hardware_static||{}, eng=m.engine||{}, h=m.history||{};
+  const requests=m.requests||[], last=requests[0];
+  // 页头 meta：目标 + 模型 + 引擎 + 上下文 + GPU
+  const meta=$('meta');
+  meta.innerHTML='目标 <code>'+esc(d.base||'')+'</code> · 模型 <b>'+esc(eng.model||d.health&&d.health.model||'--')+'</b>'+
+    (eng.version?' · 引擎 v'+esc(eng.version):'')+(eng.max_context?' · 上下文 '+kfmt(eng.max_context):'')+
+    (st.gpu_name?' · '+esc(st.gpu_name)+(hw.gpu_mem_total?' '+gb(hw.gpu_mem_total,0)+'GB':''):'')+
+    (d.health&&d.health.loaded===false?' · <b style="color:var(--warn)">模型未加载</b>':'');
+  // 页头 pill
+  if(live.state==='reading'){
+    const pct=live.prompt_total?Math.round((100*live.prompt_read)/live.prompt_total):null;
+    setPill('reading',pct!=null?'读取提示 · '+pct+'%':'读取提示');
+  } else if(live.state==='generating'){
+    setPill('generating','生成中 · '+fmt(live.tok_s,1)+' tok/s');
+  } else setPill('idle','空闲');
+  if(live.queued>0) setPill('queued',live.queued+' 个排队');
+  renderState(live,last);
+  renderMetrics(live,hw,st,eng,h,last);
+  renderCtx(live,hw,eng,last);
+  renderReqs(requests,m.totals,m.requests_kept);
+  renderConvCache(m.conversation_cache);
+  renderMcp(d.mcp);
+}
+function renderState(live,last){
+  const on=live.queued>0?'queued':live.state;
+  document.querySelectorAll('#stateBadges .badge').forEach((b)=>b.classList.toggle('on',b.dataset.s===on||b.dataset.s===live.state));
+  const prog=$('stateProg');
+  let label='等待请求',detail='',pct=0;
+  if(live.state==='reading'){
+    label='读取提示'; prog.dataset.tone='info';
+    if(live.prompt_total){ pct=(100*live.prompt_read)/live.prompt_total; detail=fmt(live.prompt_read)+' / '+fmt(live.prompt_total)+' tokens · '+fmt(pct)+'%'; }
+    else detail=fmt(live.prompt_tokens)+' tokens';
+  } else if(live.state==='generating'){
+    label=live.phase?live.phase:'生成中'; delete prog.dataset.tone;
+    pct=live.max_tokens?Math.min(100,(100*live.generated)/live.max_tokens):0;
+    detail=fmt(live.generated)+' tokens · '+fmt(live.tok_s,1)+' tok/s';
+  } else if(last){
+    delete prog.dataset.tone;
+    detail='上次：'+fmt(last.output_tokens)+' tokens'+(last.decode_tok_s?' at '+fmt(last.decode_tok_s,1)+' tok/s':'');
+  }
+  $('stateLabel').textContent=label; $('stateDetail').textContent=detail; $('stateBar').style.width=pct+'%';
+}
+function renderMetrics(live,hw,st,eng,h,last){
+  const speed=live.state==='generating'?live.tok_s:last?last.decode_tok_s:null;
+  setMetric('speed',speed==null?null:fmt(speed,1),'t/s',live.state==='generating'?'当前 Decode':last?'上次请求 Decode':'Decode');
+  const prefill=live.state!=='idle'?live.prefill_tok_s_mean
+    :last&&last.prompt_ms>0?Math.max(0,last.prompt_tokens-(last.reused||0))/(last.prompt_ms/1000):null;
+  setMetric('prefill',prefill==null?null:fmt(prefill),'',live.state==='reading'?'当前 Prefill':live.state==='generating'?'本请求 Prefill':last?'上次请求 Prefill':'Prefill');
+  spark('speed',h.tok_s); sparkPrefill(h.prefill_tok_s_mean);
+  const per=(f)=>(hw.gpus||[]).map((g)=>'GPU '+g.index+' '+f(g)).join(' · ');
+  const multi=(hw.gpus||[]).length>1;
+  setMetric('gpu',hw.gpu_util==null?null:fmt(hw.gpu_util),'%',multi?per((g)=>(g.util==null?'–':fmt(g.util)+'%')):st.gpu_name||'');
+  spark('gpu',h.gpu_util,100);
+  setMetric('vram',hw.gpu_mem_used==null?null:gb(hw.gpu_mem_used),hw.gpu_mem_total?'/ '+gb(hw.gpu_mem_total,0)+' GB':'GB',
+    multi?per((g)=>(g.mem_used==null?'–':gb(g.mem_used)+' GB')):eng.expert_slots?fmt(eng.expert_slots)+' 专家缓存':'');
+  spark('vram',h.gpu_mem_used,hw.gpu_mem_total);
+  setMetric('temp',hw.gpu_temp==null?null:fmt(hw.gpu_temp),'°C',multi?per((g)=>(g.temp==null?'–':fmt(g.temp)+'°')):'');
+  spark('temp',h.gpu_temp,90);
+  setMetric('power',hw.gpu_power==null?null:fmt(hw.gpu_power),'W',hw.gpu_power_limit?'上限 '+fmt(hw.gpu_power_limit)+' W':'');
+  spark('power',h.gpu_power,hw.gpu_power_limit);
+  const gen=hw.gpu_pcie_gen_max||hw.gpu_pcie_gen;
+  setMetric('pcie',gen?'Gen'+gen:null,hw.gpu_pcie_width?'x'+hw.gpu_pcie_width:'',
+    hw.gpu_pcie_rx_mb==null?'':'→GPU '+fmt(hw.gpu_pcie_rx_mb,hw.gpu_pcie_rx_mb<10?1:0)+' MB/s'+
+    (hw.gpu_pcie_gen&&gen&&hw.gpu_pcie_gen<gen?' · 空闲 Gen'+hw.gpu_pcie_gen:''));
+  spark('pcie',h.gpu_pcie_rx_mb);
+  setMetric('cpu',hw.cpu==null?null:fmt(hw.cpu),'%',st.threads?(st.cores?st.cores+' 核 · ':'')+st.threads+' 线程':'');
+  spark('cpu',h.cpu,100);
+  if(hw.disk_read_mb==null) setMetric('disk',null,'',st.psutil?'':'需要 psutil');
+  else{
+    const big=hw.disk_read_mb>=1000;
+    setMetric('disk',big?fmt(hw.disk_read_mb/1024,2):fmt(hw.disk_read_mb,hw.disk_read_mb<10?1:0),big?'GB/s':'MB/s',
+      hw.disk_write_mb==null?'':'写 '+fmt(hw.disk_write_mb,1)+' MB/s');
+  }
+  spark('disk',h.disk_read_mb);
+}
+function renderCtx(live,hw,eng,last){
+  const ctx=eng.max_context||0;
+  let used=0;
+  if(live.state!=='idle') used=(live.prompt_tokens||0)+(live.generated||0);
+  else if(last) used=(last.prompt_tokens||0)+(last.output_tokens||0);
+  const frac=ctx?Math.min(1,used/ctx):0;
+  $('ctxFill').setAttribute('stroke-dasharray',(235.6*frac).toFixed(1)+' 314.2');
+  $('ctxFill').style.opacity=235.6*frac>=3?'1':'0';
+  $('ctxPct').textContent=Math.round(frac*100)+'%';
+  $('ctxSub').textContent=ctx?kfmt(used)+' / '+kfmt(ctx):'–';
+  const cacheBytes=(eng.expert_cache_mib||0)*1048576;
+  $('slotsText').textContent=eng.expert_slots?fmt(eng.expert_slots)+' · '+gb(cacheBytes)+' GB':'–';
+  $('slotsBar').style.width=hw.gpu_mem_total?Math.min(100,(100*cacheBytes)/hw.gpu_mem_total)+'%':'0%';
+  $('ramText').textContent=hw.ram_total?gb(hw.ram_used)+' / '+gb(hw.ram_total,0)+' GB':'–';
+  const ramPct=hw.ram_total?(100*hw.ram_used)/hw.ram_total:0;
+  $('ramBar').style.width=ramPct+'%';
+  if(ramPct>92) $('ramProg').dataset.tone='danger'; else delete $('ramProg').dataset.tone;
+  $('tempText').textContent=hw.gpu_temp==null?'–':fmt(hw.gpu_temp)+' °C';
+  $('tempBar').style.width=hw.gpu_temp==null?'0%':Math.min(100,hw.gpu_temp)+'%';
+}
+function renderReqs(requests,totals,kept){
+  const body=$('reqBody');
+  if(!requests.length) body.innerHTML='<tr><td colspan="8" class="muted">暂无请求</td></tr>';
+  else{
+    const badge={stop:['','完成'],length:['','达上限'],cancel:['queued','已停止'],disconnect:['queued','已断开'],error:['error','错误']};
+    body.innerHTML=requests.slice(0,reqShowAll?requests.length:12).map((r)=>{
+      const b=badge[r.finish]||['',r.finish||'–'];
+      const t=new Date(r.time*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      const hit=r.hit_rate==null?'–':(r.hit_rate*100).toFixed(1)+'%'+(r.pcie_share?' <span class="muted" title="经 PCIe 读取的专家占比">+'+(r.pcie_share*100).toFixed(1)+'% PCIe</span>':'');
+      return '<tr><td>'+esc(t)+'</td><td><span class="badge on" data-s="'+esc(b[0])+'"'+(b[0]?' style="background:'+({queued:'#fef3c7',error:'#fee2e2'}[b[0]]||'#f1f5f9')+';color:'+({queued:'#b45309',error:'#dc2626'}[b[0]]||'#475569')+'">':'')+esc(b[1])+'</span></td>'+
+        '<td class="num">'+fmt(r.prompt_tokens)+'</td><td class="num">'+fmt(r.reused)+'</td><td class="num">'+fmt(r.output_tokens)+'</td>'+
+        '<td class="num">'+fmt(r.decode_tok_s,1)+'</td><td class="num">'+hit+'</td><td class="num">'+fmt(r.duration_s,1)+' s</td></tr>';
+    }).join('');
+  }
+  const all=$('reqAll');
+  kept=kept==null?requests.length:kept;
+  all.hidden=kept<=12;
+  all.textContent=reqShowAll?'显示较少':'显示全部（'+kept+'）';
+  $('reqWrap').classList.toggle('all',reqShowAll);
+  $('reqTotals').textContent=renderTotals(totals);
+}
+function renderTotals(t){
+  if(!t||!t.requests) return '';
+  const since=new Date(t.since*1000).toLocaleString([], {weekday:'short',hour:'2-digit',minute:'2-digit'});
+  const read=t.prompt_tokens-t.reused;
+  const pSpeed=t.prompt_ms>0&&read>0?' at '+fmt(read/(t.prompt_ms/1000))+' tok/s':'';
+  const oSpeed=t.decode_ms>0&&t.output_tokens>0?' at '+fmt(t.output_tokens/(t.decode_ms/1000),1)+' tok/s':'';
+  return '自 '+since+' 起：'+fmt(t.requests)+' 个请求 · 读取 '+fmt(read)+' 提示 tokens'+pSpeed+'（复用 '+fmt(t.reused)+'）· 输出 '+fmt(t.output_tokens)+' tokens'+oSpeed;
+}
+function renderConvCache(c){
+  $('ccCard').hidden=!c;
+  if(!c) return;
+  const pct=(a,b)=>(b?Math.min(100,(100*a)/b):0)+'%';
+  $('ccBars').hidden=!c.enabled;
+  if(c.enabled){
+    $('ccSlotsText').textContent=fmt(c.parked)+' / '+fmt(c.slots);
+    $('ccSlotsBar').style.width=pct(c.parked,c.slots);
+    const budget=c.budget_mib*1048576;
+    $('ccMemText').textContent=gb(c.bytes)+' / '+gb(budget,0)+' GB';
+    $('ccMemBar').style.width=pct(c.bytes,budget);
+  }
+  $('ccSum').textContent=c.requests?fmt(c.requests_reused)+' / '+fmt(c.requests)+' 个请求复用了部分提示':'';
+  const share=c.prompt_tokens?'（占全部提示 tokens 的 '+fmt((100*c.reused_tokens)/c.prompt_tokens)+'%）':'';
+  const event=c.last_event?(c.last_event==='parked'?'停放':'恢复')+fmt(c.last_tokens)+' tokens，'+since(c.last_at):null;
+  facts($('ccFacts'),[
+    ['上次请求',c.last_prompt!=null?'复用 '+fmt(c.last_reused||0)+' / '+fmt(c.last_prompt)+' 提示 tokens':null],
+    ['自启动复用',c.requests?fmt(c.reused_tokens)+' tokens'+share:null],
+    ['停放 / 恢复',c.enabled?fmt(c.parks)+' / '+fmt(c.restores)+(c.evictions?' · 淘汰 '+fmt(c.evictions):''):null],
+    ['最近切换',c.enabled?event:null],
+  ]);
+  $('ccNote').textContent=c.enabled
+    ?'延续已停放会话的请求会直接取回其状态而非重新读取；槽位或内存满时淘汰最旧的。'
+    :'引擎保留最近一次会话的状态，追问只需读取新增部分。要在运行配置 args 加 "--conversation-cache-mib", "8192" 可同时停放多个会话。';
+}
+const MCP_STATE={ready:['generating','已连接'],starting:['reading','启动中'],failed:['error','失败'],stopped:['queued','已停止'],idle:['','等待']};
+function renderMcp(info){
+  const servers=(info&&info.servers)||[];
+  $('mcpCard').hidden=!servers.length;
+  if(!servers.length) return;
+  const ready=servers.filter((s)=>s.status==='ready'||s.status==='stopped');
+  $('mcpSum').textContent=fmt(info.tools)+' 工具 · '+ready.length+' / '+servers.length+' 个服务器已连接';
+  $('mcpList').innerHTML=servers.map((s)=>{
+    const b=MCP_STATE[s.status]||['',s.status];
+    const extra=s.info&&s.info.name?' · '+esc(s.info.name)+(s.info.version?' '+esc(s.info.version):''):'';
+    return '<div class="mcpSrv"><div class="head"><span class="badge on" data-s="'+esc(b[0])+'">'+esc(b[1])+'</span>'+
+      '<strong>'+esc(s.name)+'</strong><span class="muted small">'+esc(s.transport)+' · '+fmt((s.tools||[]).length)+' 工具'+extra+'</span></div>'+
+      (s.error?'<div class="msgError">'+esc(s.error)+'</div>':'')+
+      ((s.tools||[]).length?'<div>'+s.tools.map((t)=>'<span class="chip" title="'+esc(t.description||'')+'">'+esc(t.tool)+'</span>').join('')+'</div>':'')+
+      '</div>';
+  }).join('');
+}
+$('reqAll').addEventListener('click',()=>{ reqShowAll=!reqShowAll; });
+
+// ====== 电源控制（POST /v1/internal/strata-remote/cmd，口径同 cpu.html：/v1/internal/ 自动带 X-Console-Token，401 补录重试）======
+// 后端动作白名单 wake|shutdown|startbat；MAC/sshHost/bat 真源=strata-remote.json（服务端热加载）。
+function pwrPost(action){
+  if(action==='shutdown' && !confirm('确定关机 192.0.2.38？\n跑在这台机上的推理服务（含正在对话的 AI 会话）会一并中断。')) return;
+  const msg=$('pwrMsg');
+  const btns=Array.prototype.slice.call(document.querySelectorAll('#pwrBtns button'));
+  btns.forEach((b)=>{ b.disabled=true; });
+  msg.style.color='var(--tx3)';
+  msg.textContent=action==='wake'?'正在发送魔术包…':action==='shutdown'?'正在下发关机指令…':'正在远程启动 Strata…';
+  const withTok=(t)=>Object.assign({'Content-Type':'application/json'}, t?{'X-Console-Token':t}:{});
+  const doFetch=(t)=>fetch('/v1/internal/strata-remote/cmd',{ method:'POST', headers:withTok(t), body:JSON.stringify({action:action}) });
+  const show=(d)=>{ msg.style.color=d&&d.ok?'var(--ok)':'var(--bad)'; msg.textContent=(d&&d.ok?'✓ ':'✗ ')+((d&&d.msg)||'无响应'); };
+  const t0=localStorage.getItem('consoleToken');
+  doFetch(t0).then((r)=>{
+    if(r.status===401){
+      const t=prompt('请输入控制台管理口令');
+      if(t&&t.trim()){ localStorage.setItem('consoleToken',t.trim()); return doFetch(t.trim()).then((r2)=>r2.json()); }
+    }
+    return r.json();
+  }).then(show).catch((e)=>{ msg.style.color='var(--bad)'; msg.textContent='✗ 请求失败：'+((e&&e.message)||e); })
+    .finally(()=>{ btns.forEach((b)=>{ b.disabled=false; }); });
+}
+
+startMon();
+</script>
+</body></html>

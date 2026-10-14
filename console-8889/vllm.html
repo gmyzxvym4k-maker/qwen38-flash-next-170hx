@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vLLM 引擎监控 · vLLM 管理台</title>
+<style>
+  :root {
+    --bg: #f6f7fb; --card: #ffffff; --border: #e5e7eb; --border-light: #eef0f4;
+    --text: #1f2937; --text-secondary: #4b5563; --text-tertiary: #9ca3af;
+    --accent: #6366f1; --accent-bg: #eef2ff;
+    --blue: #2563eb; --blue-bg: #eaf2ff;
+    --green: #10b981; --green-bg: #e7f8f1;
+    --orange: #d97706; --orange-bg: #fef3e2;
+    --red: #dc2626; --red-bg: #fdeaea;
+    --cyan: #0891b2; --cyan-bg: #e6f7fb;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; padding: 18px 20px 40px; }
+  .head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+  .head h1 { font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .head h1 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); display: inline-block; }
+  .stamp { font-size: 11px; color: var(--text-tertiary); margin-left: auto; }
+  .inst-bar { display: flex; gap: 8px; flex-wrap: wrap; }
+  .inst-badge { font-size: 12px; padding: 4px 10px; border-radius: 8px; background: var(--accent-bg); color: var(--accent); font-weight: 600; display: inline-flex; gap: 6px; align-items: center; }
+  .inst-badge.off { background: var(--bg); color: var(--text-tertiary); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(205px, 1fr)); gap: 12px; margin-bottom: 14px; }
+  .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; min-height: 74px; }
+  .kpi .lab { font-size: 11px; color: var(--text-tertiary); margin-bottom: 4px; }
+  .kpi .val { font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .kpi .val small { font-size: 11px; font-weight: 500; color: var(--text-tertiary); margin-left: 3px; }
+  .kpi .sub { font-size: 11px; color: var(--text-secondary); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
+  .card h2 { font-size: 13px; font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .card h2::before { content: ""; width: 3px; height: 13px; border-radius: 2px; background: var(--accent); display: inline-block; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: right; color: var(--text-tertiary); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--border-light); }
+  th:first-child, td:first-child { text-align: left; }
+  td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--border-light); font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  td.k { color: var(--text-secondary); text-align: left; }
+  .bar { height: 8px; border-radius: 4px; background: var(--border-light); overflow: hidden; margin-top: 6px; }
+  .bar > i { display: block; height: 100%; background: linear-gradient(90deg, var(--blue), var(--accent)); border-radius: 4px; transition: width .4s; }
+  .posbar { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .posbar .pb { flex: 1 1 88px; min-width: 88px; }
+  .posbar .pb .pl { font-size: 10px; color: var(--text-tertiary); display: flex; justify-content: space-between; }
+  .posbar .pb .pt { height: 6px; border-radius: 3px; background: var(--border-light); overflow: hidden; margin-top: 3px; }
+  .posbar .pb .pt > i { display: block; height: 100%; background: var(--cyan); border-radius: 3px; }
+  .note { font-size: 12px; line-height: 1.7; border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; }
+  .note.warn { background: rgba(251,191,36,.12); border: 1px solid rgba(251,191,36,.45); color: var(--orange); }
+  .note.err { background: var(--red-bg); border: 1px solid rgba(220,38,38,.4); color: var(--red); }
+  .note.ok { background: var(--green-bg); border: 1px solid rgba(16,185,129,.35); color: var(--green); }
+  .empty { text-align: center; padding: 60px 20px; color: var(--text-tertiary); }
+  .empty .big { font-size: 40px; margin-bottom: 10px; }
+  .empty button { margin-top: 14px; font: inherit; font-size: 13px; padding: 8px 18px; border-radius: 10px; border: 1px solid var(--accent); background: var(--accent-bg); color: var(--accent); cursor: pointer; }
+  .mono { font-family: var(--mono); font-size: 11px; }
+  .tag { display: inline-block; font-size: 10px; line-height: 1; padding: 3px 7px; border-radius: 5px; background: var(--accent-bg); color: var(--accent); font-weight: 700; }
+  .tag.gray { background: var(--bg); color: var(--text-tertiary); }
+</style>
+</head>
+<body>
+  <div class="head">
+    <h1><span class="dot"></span>vLLM 引擎监控</h1>
+    <div class="inst-bar" id="instBar"><span class="inst-badge off">检测中…</span></div>
+    <div class="stamp" id="stamp">--</div>
+  </div>
+  <div id="notes"></div>
+  <div id="body"><div class="empty"><div class="big">⏳</div>加载中…</div></div>
+
+<script>
+// ===== vLLM 独立监控页（vLLM 管理台内嵌 /vllm.html，纯只读） =====
+// 形态复刻 /sglang.html（同设计约束），指标口径全部换成 vLLM 0.30.0 实测族名。
+// 设计约束（09-23 / 09-25 线上教训固化）：
+//  ① 轮询链任何一次异常都不能吃掉重排句柄 → tick 的 then/catch 双侧都 setTimeout 续跑；
+//  ② 前端超时不用 AbortSignal.timeout()（标签页节能冻结后会永久挂起），自建控制器并清理；
+//  ③ 后台标签暂停轮询（visibilitychange 回前台立即补刷）；
+//  ④ 渲染分段 safeRun：一段抛错只坏一个卡片，不拖垮整页。
+// 数据源：/v1/internal/model-manager（实例发现）→ /v1/internal/metrics?port=（逐实例指标）
+//        + /v1/internal/model-params（引擎参数）。
+// 【vLLM 与 SGLang 的口径差异（实测）】
+//  · vLLM 指标只带 engine=/model_name= （无 pp_rank）→ 单引擎聚合值，直接取值，不做 rank 去重；
+//  · 多序列族按功能标签拆分（source= / finished_reason= / position= / reason=）→ 按标签过滤，同序列才求和；
+//  · cache_config_info 是「标签承载配置」的 gauge，配置要从标签字典读，不是从值读。
+
+var POLL_MS = 2000;
+// model-manager 超时：后端已加缓存（正常 <100ms），但仍可能被引擎重载/GPU 采样拖慢。
+// 取 12s（> 后端实测最差 6.2s）以免「后端其实有数据、前端先放弃」造成的假空态。
+var MM_TIMEOUT_MS = 12000;
+var _timer = null, _busy = false, _lastTickAt = 0;
+var _lastGood = [];        // 上一次成功发现的vllm实例（取数失败时保留画面用；
+                         // 只存本运行时的实例，空态判定才不会把「另一种引擎在跑」误当自己有实例）
+var _lastGoodAt = 0;       // 上一次成功取数的时刻
+var _emptySince = 0;       // 「后端返回空列表」起始时刻（宽限期判抖动用，0=未在观察）
+var EMPTY_GRACE_MS = 6000; // 空列表连续这么久才认定为「实例已停止」
+var _prev = {};          // port -> { t, gen, promptCompute, ... }（差值用）
+var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+
+function fetchT(url, ms) {
+  // 自建超时控制器（教训②）：settle 时清 timer，防句柄泄漏
+  var ctl = new AbortController();
+  var to = setTimeout(function () { try { ctl.abort(); } catch (e) {} }, ms || 8000);
+  return fetch(url, { signal: ctl.signal }).then(function (r) {
+    clearTimeout(to);
+    return r;
+  }, function (e) { clearTimeout(to); throw e; });
+}
+function safeRun(fn) { try { fn(); } catch (e) { console.warn('[vllm-page] render segment failed:', e); } }
+function fmt(n, d) { if (n == null || isNaN(n)) return '--'; return Number(n).toFixed(d == null ? 1 : d); }
+function fmtInt(n) { if (n == null || isNaN(n)) return '--'; return Math.round(n).toLocaleString(); }
+function pct(n, d) { return n == null || isNaN(n) ? '--' : fmt(n * 100, d == null ? 1 : d) + '%'; }
+
+// ---- metrics 文本解析：族名 → 样本列表（值 + 标签） ----
+function parseMetrics(text) {
+  var fams = {};
+  var lines = text.split('\n');
+  for (var i = 0; i < lines.length; i++) {
+    var ln = lines[i];
+    if (!ln || ln[0] === '#' || ln.indexOf('vllm:') !== 0) continue;
+    var sp = ln.lastIndexOf(' ');
+    if (sp < 0) continue;
+    var v = parseFloat(ln.substring(sp + 1));
+    if (isNaN(v)) continue;
+    var head = ln.substring(0, sp).trim();
+    var ob = head.indexOf('{');
+    var name = ob < 0 ? head : head.substring(0, ob);
+    var labels = {};
+    if (ob >= 0) {
+      var lr = head.substring(ob + 1, head.length - 1);
+      var re = /([a-zA-Z_0-9]+)="([^"]*)"/g, mm;
+      while ((mm = re.exec(lr))) labels[mm[1]] = mm[2];
+    }
+    (fams[name] = fams[name] || []).push({ v: v, l: labels });
+  }
+  return fams;
+}
+// 取值：可选标签过滤（如 source=local_compute）；命中多条同族时求和（功能分量），
+// 单条时直接返回。vLLM 无 pp_rank 副本，故不存在「求和会×2」的问题。
+function famValue(fams, base, filter) {
+  var arr = fams[base];
+  if (!arr || !arr.length) return null;
+  if (filter) {
+    arr = arr.filter(function (s) {
+      for (var k in filter) { if (s.l[k] !== filter[k]) return false; }
+      return true;
+    });
+    if (!arr.length) return null;
+  }
+  if (arr.length === 1) return arr[0].v;
+  var t = 0;
+  for (var j = 0; j < arr.length; j++) t += arr[j].v;
+  return t;
+}
+function famLabels(fams, base) {
+  var arr = fams[base];
+  return arr && arr.length ? arr[0].l : null;
+}
+function histAvg(fams, base) {
+  function agg(b) {
+    var arr = fams[b]; if (!arr || !arr.length) return null;
+    var t = 0; for (var j = 0; j < arr.length; j++) t += arr[j].v; return t;
+  }
+  var s = agg(base + '_sum'), c = agg(base + '_count');
+  if (s == null || c == null || c <= 0) return null;
+  return s / c;
+}
+function histPct(fams, base, q) {
+  // 从 _bucket 累计序列估分位（le 标签），用于 TTFT/TPOT 的分位展示
+  var arr = fams[base + '_bucket'];
+  if (!arr || !arr.length) return null;
+  var pts = arr.map(function (s) { return { le: parseFloat(s.l.le), v: s.v }; })
+    .filter(function (p) { return !isNaN(p.le); });
+  if (!pts.length) return null;
+  pts.sort(function (a, b) { return a.le - b.le; });
+  var total = pts[pts.length - 1].v;
+  if (!(total > 0)) return null;
+  var target = total * q;
+  for (var i = 0; i < pts.length; i++) { if (pts[i].v >= target) return pts[i].le; }
+  return pts[pts.length - 1].le;
+}
+
+function kpi(lab, val, unit, sub, color) {
+  return '<div class="kpi"><div class="lab">' + esc(lab) + '</div>'
+    + '<div class="val"' + (color ? ' style="color:' + color + '"' : '') + '>' + val + (unit ? '<small>' + esc(unit) + '</small>' : '') + '</div>'
+    + (sub ? '<div class="sub">' + sub + '</div>' : '') + '</div>';
+}
+
+function renderInstance(inst, mt, params, kvDet) {
+  var port = inst.port;
+  if (mt === null) {
+    return '<div class="card"><h2>:<span class="mono">' + port + '</span> · 指标端点不可用</h2>'
+      + '<div class="note err" style="margin:0">该实例 <b>/metrics</b> 返回非 200 —— vLLM 启动时没带 <b>--enable-metrics</b>（本栈由 inner 内置）。'
+      + '本页全部实时统计依赖此端点。检查启动脚本后重启实例即可恢复。</div></div>';
+  }
+  var f = parseMetrics(mt);
+  var g = function (b, filter) { return famValue(f, b, filter); };
+
+  // ---- 吞吐（counter 差值；Prometheus 累计值只增不减）----
+  var now = Date.now();
+  var prev = _prev[port] || {};
+  var cur = {
+    t: now,
+    gen: g('vllm:generation_tokens_total'),
+    prompt: g('vllm:prompt_tokens_total'),
+    compute: g('vllm:prompt_tokens_by_source_total', { source: 'local_compute' }),
+    cacheHit: g('vllm:prompt_tokens_by_source_total', { source: 'local_cache_hit' }),
+    extHit: g('vllm:prompt_tokens_by_source_total', { source: 'external_kv_transfer' }),
+    cached: g('vllm:prompt_tokens_cached_total'),
+  };
+  var dSec = prev.t ? (now - prev.t) / 1000 : 0;
+  var genSpeed = (dSec > 1 && cur.gen != null && prev.gen != null) ? (cur.gen - prev.gen) / dSec : null;
+  var ppSpeed = (dSec > 1 && cur.compute != null && prev.compute != null) ? (cur.compute - prev.compute) / dSec : null;
+  _prev[port] = cur;
+
+  // ---- 引擎自报配置（cache_config_info：配置在标签里）----
+  var cfg = famLabels(f, 'vllm:cache_config_info') || {};
+  var kvTokens = cfg.kv_cache_size_tokens != null ? parseFloat(cfg.kv_cache_size_tokens) : null;
+  var kvConc = cfg.kv_cache_max_concurrency != null ? parseFloat(cfg.kv_cache_max_concurrency) : null;
+  var blockSize = cfg.block_size != null ? parseFloat(cfg.block_size) : null;
+  var prefixOn = String(cfg.enable_prefix_caching) === 'True';
+
+  // ---- 并发 / KV ----
+  var running = g('vllm:num_requests_running') || 0;
+  var waiting = g('vllm:num_requests_waiting') || 0;
+  var kvUsage = g('vllm:kv_cache_usage_perc');            // 0~1 fraction
+  var preempt = g('vllm:num_preemptions_total') || 0;
+
+  // ---- 前缀缓存 ----
+  var pcHits = g('vllm:prefix_cache_hits_total');
+  var pcQueries = g('vllm:prefix_cache_queries_total');
+  var pcRate = (pcHits != null && pcQueries > 0) ? pcHits / pcQueries : null;
+
+  // ---- 二级缓存（CPU KV offload：OffloadingConnector / SimpleCPUOffload）----
+  var extHits = g('vllm:external_prefix_cache_hits_total');
+  var extQueries = g('vllm:external_prefix_cache_queries_total');
+  var extRate = (extHits != null && extQueries > 0) ? extHits / extQueries : null;
+
+  // ---- MTP 投机 ----
+  var drafts = g('vllm:spec_decode_num_drafts_total');
+  var draftTokens = g('vllm:spec_decode_num_draft_tokens_total');
+  var accepted = g('vllm:spec_decode_num_accepted_tokens_total');
+  var accRate = (accepted != null && draftTokens > 0) ? accepted / draftTokens : null;
+  var accLen = (accepted != null && drafts > 0) ? (1 + accepted / drafts) : null;
+  var perPos = (f['vllm:spec_decode_num_accepted_tokens_per_pos_total'] || [])
+    .map(function (s) { return { pos: parseInt(s.l.position), v: s.v }; })
+    .filter(function (x) { return !isNaN(x.pos); })
+    .sort(function (a, b) { return a.pos - b.pos; });
+
+  // ---- 延迟 ----
+  var ttft = histAvg(f, 'vllm:time_to_first_token_seconds');
+  var tpot = histAvg(f, 'vllm:inter_token_latency_seconds');
+  var e2e = histAvg(f, 'vllm:e2e_request_latency_seconds');
+  var qt = histAvg(f, 'vllm:request_queue_time_seconds');
+  var pfT = histAvg(f, 'vllm:request_prefill_time_seconds');
+  var deT = histAvg(f, 'vllm:request_decode_time_seconds');
+  var ttftP95 = histPct(f, 'vllm:time_to_first_token_seconds', 0.95);
+
+  // ---- 请求成败 ----
+  var okStop = g('vllm:request_success_total', { finished_reason: 'stop' }) || 0;
+  var okLen = g('vllm:request_success_total', { finished_reason: 'length' }) || 0;
+  var okAbort = g('vllm:request_success_total', { finished_reason: 'abort' }) || 0;
+  var okErr = g('vllm:request_success_total', { finished_reason: 'error' }) || 0;
+  var done = okStop + okLen + okAbort + okErr;
+
+  // ---- 工程估算 ----
+  var flops = g('vllm:estimated_flops_per_gpu_total');
+  var rdBytes = g('vllm:estimated_read_bytes_per_gpu_total');
+  var wrBytes = g('vllm:estimated_write_bytes_per_gpu_total');
+  var mmHits = g('vllm:mm_cache_hits_total'), mmQ = g('vllm:mm_cache_queries_total');
+
+  var gpuTxt = (inst.gpus && inst.gpus.length > 1) ? ('GPU ' + inst.gpus.join('+'))
+    : ((inst.gpu != null && inst.gpu !== '') ? ('GPU ' + inst.gpu) : 'GPU ?');
+  var html = '';
+
+  // ---- 顶部 KPI ----
+  html += '<div class="grid">';
+  html += kpi('Decode 吞吐', genSpeed != null ? fmt(genSpeed) : (running > 0 ? '--' : '空闲'), ' tok/s',
+    'generation_tokens 差值' + (dSec ? '' : '（等下一帧）'));
+  html += kpi('Prefill 吞吐', ppSpeed != null ? fmtInt(ppSpeed) : (running > 0 ? '--' : '空闲'), ' tok/s',
+    'local_compute 差值（未命中重算段）');
+  html += kpi('运行 / 排队', '<span style="color:var(--accent)">' + running + '</span><small>/</small>' + waiting, '',
+    running > 0 ? '本帧有活跃请求' : '调度器空闲' + (preempt > 0 ? '（累计抢占 ' + fmtInt(preempt) + '）' : ''));
+  html += kpi('前缀缓存命中', pcRate != null ? pct(pcRate) : '--', '',
+    'prefix_cache_hits/queries' + (pcQueries != null ? '（' + fmtInt(pcQueries) + ' 次查询）' : ''));
+  html += '</div>';
+
+  // ---- KV 池 ----
+  var usagePct = kvUsage != null ? Math.min(100, kvUsage * 100) : null;
+  html += '<div class="card"><h2>KV 池（paged attention · block ' + (blockSize != null ? fmtInt(blockSize) : '--') + '）</h2>';
+  if (kvUsage != null || kvTokens != null) {
+    html += '<div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px">'
+      + '<span>占用 <b class="mono">' + (usagePct != null ? fmt(usagePct, 1) + '%' : '--') + '</b></span>'
+      + (kvTokens != null ? '<span>池容量 <b class="mono">' + fmtInt(kvTokens) + '</b> tok</span>' : '')
+      + (kvTokens != null && usagePct != null ? '<span>已用 <b class="mono">' + fmtInt(kvTokens * usagePct / 100) + '</b> tok</span>' : '')
+      + (kvConc != null ? '<span>最大并发 <b class="mono">' + fmt(kvConc, 2) + '</b> ×</span>' : '')
+      + '<span>前缀缓存 <b class="mono">' + (prefixOn ? '启用' : '关闭') + '</b></span>'
+      + '<span>KV dtype <b class="mono">' + esc(cfg.cache_dtype || '--') + '</b></span>'
+      + '</div><div class="bar"><i style="width:' + (usagePct == null ? 0 : usagePct.toFixed(1)) + '%"></i></div>'
+      + '<div class="sub" style="font-size:11px;color:var(--text-tertiary);margin-top:4px">'
+      + '占用 <b>' + (usagePct != null ? fmt(usagePct, 1) + '%' : '--') + '</b>'
+      + (kvConc != null ? ' · 当前可承载 ' + fmt(kvConc, 2) + ' 路满上下文请求' : '')
+      + '（口径 vllm:kv_cache_usage_perc，配置取自 cache_config_info）</div>';
+  } else {
+    html += '<div style="font-size:12px;color:var(--text-tertiary)">尚无 KV 池指标（引擎冷启动加载中或指标缺失）</div>';
+  }
+  html += '</div>';
+
+  // ---- 二级缓存（vLLM 专属：CPU KV offload，详细数据源 /v1/internal/kv-detail）----
+  // 概览条 = 容量/驻留/命中率；明细表 = 配置 / 驻留与内存 / 命中与流量 / 速率。
+  // kvDet 缺失（接口异常/首轮未到）时退回 external_prefix_cache 计数简表，不留白。
+  {
+    var kd = (kvDet && typeof kvDet === 'object') ? kvDet : null;
+    var _on = kd ? !!kd.enabled : (extQueries > 0);
+    html += '<div class="card"><h2>CPU KV 二级缓存 <span class="tag ' + (_on ? '' : 'gray') + '">'
+      + (_on ? '已启用' : '未启用') + '</span>'
+      + (kd && kd.connector ? '<span class="tag gray">' + esc(kd.connector) + '</span>' : '')
+      + '</h2>';
+    var _fmtGb = function (v, d) { return v == null || isNaN(v) ? '--' : Number(v).toFixed(d == null ? 1 : d) + ' GiB'; };
+    var _bw = function (bps) { return bps == null || isNaN(bps) ? '--' : (bps >= 1073741824 ? (bps / 1073741824).toFixed(2) + ' GiB/s' : bps >= 1048576 ? (bps / 1048576).toFixed(1) + ' MiB/s' : (bps / 1024).toFixed(0) + ' KiB/s'); };
+    if (kd && kd.enabled) {
+      var _capGb = kd.capacity_gb;
+      var _resGb = kd.resident_gb;
+      var _resPct = (_capGb > 0 && _resGb != null) ? (_resGb / _capGb * 100) : null;
+      var _hitPct = (kd.hit_rate != null) ? kd.hit_rate : (extRate != null ? extRate * 100 : null);
+      // 概览条
+      html += '<div style="display:flex;gap:18px;flex-wrap:wrap;font-size:12px;margin-bottom:8px">'
+        + '<span>容量 <b class="mono">' + (_capGb != null ? _capGb.toFixed(0) + ' GiB' : '--') + '</b></span>'
+        + '<span>驻留 <b class="mono">' + _fmtGb(_resGb) + (kd.resident_src === 'tmpfs' ? '（/dev/shm 实测）' : (kd.resident_src === 'metric' ? '（指标）' : '')) + '</b></span>'
+        + (_capGb > 0 && _resPct != null ? '<span>容量占用 <b class="mono">' + _resPct.toFixed(1) + '%</b></span>' : '')
+        + '<span>档内命中率 <b class="mono" style="color:' + (_hitPct > 0 ? 'var(--green)' : 'var(--orange)') + '">' + (_hitPct != null ? _hitPct.toFixed(1) + '%' : '--') + '</b></span>'
+        + '</div>'
+        + '<div class="bar"><i style="width:' + (_resPct == null ? 0 : Math.min(100, _resPct).toFixed(1)) + '%"></i></div>';
+      html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:4px 26px;margin-top:10px">';
+      // ① 配置
+      html += '<table><tr><th>连接器</th><th>容量</th><th>指标口径</th><th>block</th></tr>'
+        + '<tr><td>' + esc(kd.connector || '--') + '</td>'
+        + '<td>' + (_capGb != null ? _capGb.toFixed(0) + ' GiB' : '--') + '</td>'
+        + '<td>' + esc(kd.metric_kind || '--') + '</td>'
+        + '<td>' + (kd.gpu_pool && kd.gpu_pool.block_size ? fmtInt(kd.gpu_pool.block_size) : '--') + '</td></tr></table>';
+      // ② 驻留与内存
+      var _sm = kd.system_mem;
+      html += '<table><tr><th>tmpfs 驻留</th><th>tmpfs 上限</th><th>整机内存</th><th>可用</th></tr>'
+        + '<tr><td>' + _fmtGb(kd.shm_used_gb, 2) + (kd.shm_used_pct != null ? '（' + kd.shm_used_pct.toFixed(1) + '%）' : '') + '</td>'
+        + '<td>' + _fmtGb(kd.shm_total_gb) + '</td>'
+        + '<td>' + (_sm ? _sm.used_gb.toFixed(1) + ' / ' + _sm.total_gb.toFixed(0) + ' GiB（' + _sm.used_pct.toFixed(0) + '%）' : '--') + '</td>'
+        + '<td>' + (_sm ? (_sm.total_gb - _sm.used_gb).toFixed(1) + ' GiB' : '--') + '</td></tr></table>';
+      // ③ 命中与流量
+      html += '<table><tr><th>查询 token</th><th>命中 token</th><th>命中率</th><th>显存命中（一级）</th></tr>'
+        + '<tr><td>' + fmtInt(kd.queries != null ? kd.queries : extQueries) + '</td>'
+        + '<td>' + fmtInt(kd.hits != null ? kd.hits : extHits) + '</td>'
+        + '<td>' + (_hitPct != null ? _hitPct.toFixed(2) + '%' : '--') + '</td>'
+        + '<td>' + fmtInt(cur.cacheHit) + '</td></tr></table>';
+      html += '<table><tr><th>累计存入</th><th>累计回载</th><th>回载命中 token</th><th>在飞钉住</th></tr>'
+        + '<tr><td>' + _fmtGb(kd.stored_gb, 2) + (kd.store_count ? ' / ' + fmtInt(kd.store_count) + ' 次' : '') + '</td>'
+        + '<td>' + _fmtGb(kd.loaded_gb, 2) + (kd.load_count ? ' / ' + fmtInt(kd.load_count) + ' 次' : '') + '</td>'
+        + '<td>' + fmtInt(kd.ext_tokens) + '</td>'
+        + '<td>' + (kd.fill_pct != null ? kd.fill_pct.toFixed(1) + '%' : '--')
+        + (kd.write_pct != null || kd.read_pct != null ? '（写 ' + (kd.write_pct != null ? kd.write_pct.toFixed(1) : '--') + '% / 读 ' + (kd.read_pct != null ? kd.read_pct.toFixed(1) : '--') + '%）' : '')
+        + '</td></tr></table>';
+      // ④ 速率（滑窗差值）
+      if (kd.rates) {
+        var _r = kd.rates;
+        html += '<table><tr><th>查询速率</th><th>命中速率</th><th>存入带宽</th><th>回载带宽</th><th>回载 token 速率</th></tr>'
+          + '<tr><td>' + fmtInt(_r.queries_per_s) + ' tok/s</td>'
+          + '<td>' + fmtInt(_r.hits_per_s) + ' tok/s</td>'
+          + '<td>' + _bw(_r.store_bytes_per_s) + '</td>'
+          + '<td>' + _bw(_r.load_bytes_per_s) + '</td>'
+          + '<td>' + fmtInt(_r.ext_tokens_per_s) + ' tok/s</td></tr></table>';
+      }
+      html += '</div>';
+      // 口径脚注
+      html += '<div class="sub" style="font-size:11px;color:var(--text-tertiary);margin-top:6px">'
+        + '查询/命中 = vllm:external_prefix_cache_{queries,hits}_total（自引擎启动累计）；'
+        + '驻留 = /dev/shm（tmpfs）实测已用，本机 tmpfs 仅此档使用（单实例口径）；'
+        + '在飞钉住 = cpu_cache_usage_perc（被在飞传输占住的比例，非驻留量）；'
+        + '速率 = ' + (kd.rates ? kd.rates.window_s.toFixed(1) : '6.0') + 's 滑窗差值。'
+        + (kd.metric_kind === 'simple' ? 'SimpleCPU 档的存/取字节不经指标暴露，累计列恒 0 属正常。' : '')
+        + '</div>';
+    } else if (kd && !kd.enabled) {
+      html += '<div style="font-size:12px;line-height:1.7;color:var(--text-secondary)">'
+        + '本实例未开 CPU KV 二级缓存（引擎 cmdline 无 <code>--kv-offloading-size</code> / <code>cpu_bytes_to_use</code>，指标也无 offload 族）。'
+        + '该档为 vLLM 的 <code>OffloadingConnector</code>/<code>SimpleCPUOffloadConnector</code> 机制，'
+        + '需要时在「模型启动」弹窗开启「二级缓存（CPU KV offload）」并设置容量。</div>';
+    } else if (extQueries > 0) {
+      // kv-detail 接口未就绪的回落：保持原简表
+      html += '<table><tr><th>档内命中 token</th><th>查询 token</th><th>档内命中率</th><th>显存命中（一级）</th></tr>'
+        + '<tr><td>' + fmtInt(extHits) + '</td><td>' + fmtInt(extQueries) + '</td>'
+        + '<td>' + (extRate != null ? pct(extRate) : '--') + '</td>'
+        + '<td>' + fmtInt(cur.cacheHit) + '</td></tr></table>'
+        + '<div class="sub" style="font-size:11px;color:var(--text-tertiary);margin-top:6px">详细数据（容量/驻留/速率）需后端 /v1/internal/kv-detail（未就绪，此处为指标简表）</div>';
+    } else {
+      html += '<div style="font-size:12px;line-height:1.7;color:var(--text-secondary)">'
+        + '本实例未开 CPU KV 二级缓存（<b>vllm:external_prefix_cache_*</b> 全 0）。'
+        + '该档为 vLLM 的 <code>OffloadingConnector</code>/<code>SimpleCPUOffloadConnector</code> 机制，'
+        + '按项目结论长期默认关闭（GPU 池前缀缓存自扛约 90% 命中，常驻 pinned 内存是 MCE 风险敞口）。'
+        + '需要时由启动开关（FN_KVOFF / FN_SIMPLE_OFFLOAD）显式开启。</div>';
+    }
+    html += '</div>';
+  }
+
+  // ---- MTP 投机 ----
+  html += '<div class="card"><h2>MTP 投机解码 <span class="tag">:' + port + ' · ' + esc(gpuTxt) + '</span></h2>';
+  if (drafts != null || accepted != null) {
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:4px 26px">'
+      + '<table><tr><th>接受率</th><th>接受长度</th><th>草稿步</th><th>草稿 token</th><th>接受 token</th></tr>'
+      + '<tr><td>' + (accRate != null ? pct(accRate) : '--') + '</td>'
+      + '<td>' + (accLen != null ? fmt(accLen, 2) : '--') + '</td>'
+      + '<td>' + fmtInt(drafts) + '</td>'
+      + '<td>' + fmtInt(draftTokens) + '</td>'
+      + '<td>' + fmtInt(accepted) + '</td></tr></table>'
+      + '<table><tr><th>TTFT 均值</th><th>TTFT P95</th><th>TPOT</th><th>E2E</th><th>排队</th></tr>'
+      + '<tr><td>' + (ttft != null ? fmt(ttft * 1000, 0) + ' ms' : '--') + '</td>'
+      + '<td>' + (ttftP95 != null ? fmt(ttftP95 * 1000, 0) + ' ms' : '--') + '</td>'
+      + '<td>' + (tpot != null ? fmt(tpot * 1000, 1) + ' ms' : '--') + '</td>'
+      + '<td>' + (e2e != null ? fmt(e2e, 2) + ' s' : '--') + '</td>'
+      + '<td>' + (qt != null ? fmt(qt * 1000, 0) + ' ms' : '--') + '</td></tr></table>'
+      + '<table><tr><th>Prefill 耗时</th><th>Decode 耗时</th><th>抢占次数</th><th>MM 缓存命中</th></tr>'
+      + '<tr><td>' + (pfT != null ? fmt(pfT * 1000, 0) + ' ms' : '--') + '</td>'
+      + '<td>' + (deT != null ? fmt(deT, 2) + ' s' : '--') + '</td>'
+      + '<td style="color:' + (preempt > 0 ? 'var(--orange)' : 'inherit') + '">' + fmtInt(preempt) + '</td>'
+      + '<td>' + (mmQ ? fmtInt(mmHits) + ' / ' + fmtInt(mmQ) : '--') + '</td></tr></table>'
+      + '</div>';
+    if (perPos.length) {
+      html += '<div style="font-size:11px;color:var(--text-tertiary);margin-top:10px">逐位接受率（position 0 = 第一步草稿；'
+        + '分母=草稿步数 ' + fmtInt(drafts) + '）</div><div class="posbar">';
+      for (var pi = 0; pi < perPos.length; pi++) {
+        var pp2 = perPos[pi];
+        var rate = drafts > 0 ? Math.min(1, pp2.v / drafts) : null;
+        html += '<div class="pb"><div class="pl"><span>pos ' + pp2.pos + '</span><span>'
+          + (rate != null ? pct(rate, 1) : '--') + '</span></div>'
+          + '<div class="pt"><i style="width:' + (rate == null ? 0 : (rate * 100).toFixed(1)) + '%"></i></div></div>';
+      }
+      html += '</div>';
+    }
+  } else {
+    html += '<div style="font-size:12px;color:var(--text-tertiary)">本实例未启用投机解码（无 spec_decode_* 指标）</div>';
+  }
+  html += '</div>';
+
+  // ---- 累计吞吐 ----
+  html += '<div class="card"><h2>累计吞吐（输入按来源拆分 + 请求成败）</h2>';
+  html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:4px 26px">'
+    + '<table><tr><th>Prompt 总量</th><th>本地重算</th><th>显存命中</th><th>二级档回载</th></tr>'
+    + '<tr><td>' + fmtInt(cur.prompt) + ' tok</td>'
+    + '<td>' + fmtInt(cur.compute) + (cur.prompt > 0 && cur.compute != null ? '（' + fmt(cur.compute / cur.prompt * 100, 1) + '%）' : '') + '</td>'
+    + '<td>' + fmtInt(cur.cacheHit) + (cur.prompt > 0 && cur.cacheHit != null ? '（' + fmt(cur.cacheHit / cur.prompt * 100, 1) + '%）' : '') + '</td>'
+    + '<td>' + fmtInt(cur.extHit) + '</td></tr></table>'
+    + '<table><tr><th>生成总量</th><th>成功(stop)</th><th>截断(length)</th><th>中止/错误</th></tr>'
+    + '<tr><td>' + fmtInt(cur.gen) + ' tok</td>'
+    + '<td>' + fmtInt(okStop) + '</td>'
+    + '<td style="color:' + (okLen > 0 ? 'var(--orange)' : 'inherit') + '">' + fmtInt(okLen) + '</td>'
+    + '<td style="color:' + ((okAbort + okErr) > 0 ? 'var(--red)' : 'inherit') + '">' + fmtInt(okAbort) + ' / ' + fmtInt(okErr) + '</td></tr></table>'
+    + '<table><tr><th>请求总数</th><th>平均输出/请求</th><th>GPU 估算 FLOPs</th><th>估算读/写</th></tr>'
+    + '<tr><td>' + fmtInt(done) + '</td>'
+    + '<td>' + (done > 0 ? fmt(cur.gen / done, 0) + ' tok' : '--') + '</td>'
+    + '<td>' + (flops != null ? (flops / 1e15).toFixed(2) + ' PFLOP' : '--') + '</td>'
+    + '<td>' + (rdBytes != null ? (rdBytes / 1e9).toFixed(1) + ' / ' + (wrBytes != null ? (wrBytes / 1e9).toFixed(1) : '--') + ' GB' : '--') + '</td></tr></table>'
+    + '</div></div>';
+
+
+  // ---- 运行时参数 ----
+  var vver = (params && params.vllm_version) || (inst && inst.vllm_version) || null; // [vllm-version-1006]
+  html += '<div class="card"><h2>运行时参数（来自启动命令 / vLLM' + (vver ? ' ' + esc(vver) : ' 0.30.0') + '）</h2>';
+  if (params) {
+    var specTxt = (params.speculative_config && params.speculative_config.method)
+      ? esc(String(params.speculative_config.method)) + '×' + (params.speculative_config.num_speculative_tokens || '?') : '关闭';
+    var parTxt = (params.pipeline_parallel_size > 1 ? 'PP' + params.pipeline_parallel_size : '')
+      + (params.tensor_parallel_size > 1 ? (params.pipeline_parallel_size > 1 ? ' × ' : '') + 'TP' + params.tensor_parallel_size : '')
+      || '单卡';
+    var pleTxt = params.ple_table ? (String(params.ple_table.dtype || '').toUpperCase() + ' · ' + esc(params.ple_table.loc || '') + ' · ' + fmt(params.ple_table.gib, 2) + ' GiB') : '--';
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:4px 26px">'
+      + '<table><tr><th>vLLM 版本</th><th>上下文</th><th>并发</th><th>显存比例</th><th>投机</th><th>并行</th></tr>'
+      + '<tr><td class="mono">' + (vver ? esc(vver) : '--') + '</td>'
+      + '<td>' + fmtInt(params.max_model_len) + '</td>'
+      + '<td>' + (params.max_num_seqs != null ? params.max_num_seqs : '--') + '</td>'
+      + '<td>' + (params.gpu_memory_utilization != null ? fmt(params.gpu_memory_utilization, 2) : '--') + '</td>'
+      + '<td>' + specTxt + '</td>'
+      + '<td>' + esc(parTxt) + '</td></tr></table>'
+      + '<table><tr><th>采样 t / p / k</th><th>min_p</th><th>presence / rep</th><th>思考</th></tr>'
+      + '<tr><td>' + fmt(params.temperature, 2) + ' / ' + fmt(params.top_p, 2) + ' / ' + (params.top_k != null ? params.top_k : '--') + '</td>'
+      + '<td>' + fmt(params.min_p, 2) + '</td>'
+      + '<td>' + (params.presence_penalty != null ? fmt(params.presence_penalty, 2) : '--') + ' / ' + fmt(params.repetition_penalty, 2) + '</td>'
+      + '<td>' + (params.thinking ? '开启 · ' + esc(params.thinkingEffort || '') : '关闭') + '</td></tr></table>'
+      + '<table><tr><th>block size</th><th>attention 后端</th><th>KV 量化</th><th>PLE 表</th></tr>'
+      + '<tr><td>' + (params.block_size != null ? params.block_size : (blockSize != null ? fmtInt(blockSize) : '--')) + '</td>'
+      + '<td>' + esc(params.attention_backend || '--') + '</td>'
+      + '<td>' + esc(params.kv_cache_quant || '--') + '</td>'
+      + '<td>' + pleTxt + '</td></tr></table>'
+      + '</div>';
+  } else {
+    html += '<div style="font-size:12px;color:var(--text-tertiary)">引擎参数未取到（/v1/internal/model-params 无该端口条目）</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function render(mmInsts, metricMap, paramMap, kvMap, mmErr, stale) {
+  var body = document.getElementById('body');
+  var bar = document.getElementById('instBar');
+  var notes = document.getElementById('notes');
+  var vlInsts = mmInsts.filter(function (i) { return i.runtime === 'vllm'; });
+  safeRun(function () {
+    bar.innerHTML = vlInsts.length
+      ? vlInsts.map(function (i) {
+        var gtxt = (i.gpus && i.gpus.length > 1) ? (' · GPU' + i.gpus.join('+')) : (i.gpu != null && i.gpu !== '' ? ' · GPU' + esc(i.gpu) : '');
+        var vt = (paramMap && paramMap[i.port] && paramMap[i.port].vllm_version) || i.vllm_version || null; // [vllm-version-1006]
+        return '<span class="inst-badge">vllm :' + i.port + ' · ' + esc(i.model || '?') + gtxt + (vt ? ' · v' + esc(vt) : '') + '</span>';
+      }).join('')
+      + mmInsts.filter(function (i) { return i.runtime !== 'vllm'; })
+        .map(function (i) { return '<span class="inst-badge off">' + esc(i.runtime || '?') + ' :' + i.port + '</span>'; }).join('')
+      : (stale
+        // 取数失败 ≠ 没有实例：保留上一帧的实例徽章语义，这里只在徽章位说明状态，
+        // 正文由下方 stale 分支保留旧内容（10-03 修复：原先此处直接打「无运行中实例」）
+        ? '<span class="inst-badge off">数据获取失败 · 保留上次画面</span>'
+        : '<span class="inst-badge off">无运行中实例</span>');
+  });
+  safeRun(function () {
+    var n = '';
+    if (mmErr) n += '<div class="note err">实例发现接口异常：' + esc(mmErr) + '</div>';
+    var unknown = mmInsts.filter(function (i) { return i.runtime === 'unknown'; }).map(function (i) { return i.port; });
+    if (unknown.length) {
+      n += '<div class="note warn">端口 ' + unknown.join(' / ') + ' 的实例运行时归因失败（runtime=unknown）：'
+        + '通常是 root 启动导致 lsof 看不到监听端口、且 /proc 兜底未命中。该实例不会出现在本页统计中（仪表盘 /v1/internal/stats 正常）。</div>';
+    }
+    notes.innerHTML = n;
+  });
+  if (!vlInsts.length) {
+    if (stale) {
+      // 本轮没拿到可信数据：正文保持上一帧原样（绝不能用空 metricMap/paramMap 重渲染，
+      // parseMetrics(undefined) 会抛错把整轮 tick 打死、时间戳也停更）。
+      // 若从未成功过（无上一帧），显示明确的「取不到数据」占位，而不是「无运行中实例」。
+      if (!document.getElementById('body').innerHTML) {
+        document.getElementById('body').innerHTML =
+          '<div class="empty"><div class="big">⚠️</div>暂时取不到实例数据（model-manager 超时或未响应）。'
+          + '<div style="margin-top:6px;font-size:12px">页面每 2s 自动重试，恢复后自动显示。</div></div>';
+      }
+      return;
+    }
+    body.innerHTML = '<div class="empty"><div class="big">🟦</div>当前没有运行中的 vLLM 实例。'
+      + '<div style="margin-top:6px;font-size:12px">在「模型管理」把运行时选为 vLLM 启动实例后，本页自动出现其专属指标。</div>'
+      + '<button onclick="try{parent.switchTab(\'models\')}catch(e){}">去模型管理</button></div>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < vlInsts.length; i++) {
+    var inst = vlInsts[i];
+    html += '<div style="margin:4px 0 10px"><span class="tag" style="font-size:12px;padding:5px 12px">:'
+      + inst.port + ' · ' + esc(inst.model || '') + (inst.pid ? ' · pid ' + inst.pid : '') + '</span></div>';
+    html += renderInstance(inst, metricMap[inst.port], paramMap[inst.port], kvMap && kvMap[inst.port]);
+  }
+  body.innerHTML = html;
+}
+
+// 保留上一帧画面的降级渲染：正文一律不动（避免用空数据重渲染抛错打死整轮 tick），
+// 只更新徽章与提示条，时间戳改标「上次成功」时刻。
+function renderStale(msg) {
+  safeRun(function () {
+    var bar = document.getElementById('instBar');
+    if (_lastGood.length) {
+      bar.innerHTML = _lastGood.filter(function (i) { return i.runtime === 'vllm'; }).map(function (i) {
+        return '<span class="inst-badge off">vllm :' + i.port + ' · ' + esc(i.model || '?') + ' · 数据暂不可用</span>';
+      }).join('');
+    }
+    var notes = document.getElementById('notes');
+    notes.innerHTML = '<div class="note warn">' + esc(msg) + '</div>';
+  });
+  document.getElementById('stamp').textContent = '数据获取失败 · 上次成功 '
+    + (_lastGoodAt ? new Date(_lastGoodAt).toLocaleTimeString() : '--');
+}
+function stampFresh() {
+  document.getElementById('stamp').textContent = '更新于 ' + new Date().toLocaleTimeString() + ' · 每 ' + (POLL_MS / 1000) + 's';
+}
+
+function tick() {
+  if (_busy) { return; }
+  _busy = true;
+  fetchT('/v1/internal/model-manager', MM_TIMEOUT_MS).then(function (r) { return r.json(); })
+    .catch(function (e) { console.warn('[vllm-page] model-manager failed:', (e && e.name) || e); return null; })
+    .then(function (mm) {
+      var insts = (mm && mm.instances) || [];
+      var gotData = !!(mm && Array.isArray(mm.instances));
+      var vls = insts.filter(function (i) { return i.runtime === 'vllm'; });
+      var metricMap = {}, paramMap = {}, kvMap = {};
+      var jobs = [];
+      // 二级缓存详细数据：一次请求拿全部实例（后端 kvDetailInfo 聚合，2s 轮询频率可承受）
+      jobs.push(fetchT('/v1/internal/kv-detail', 8000).then(function (r) { return r.ok ? r.json() : null; }, function () { return null; })
+        .then(function (d) {
+          var arr = (d && d.instances) || [];
+          for (var q = 0; q < arr.length; q++) kvMap[arr[q].port] = arr[q];
+        }));
+      for (var i = 0; i < vls.length; i++) {
+        (function (p) {
+          jobs.push(fetchT('/v1/internal/metrics?port=' + p, 8000).then(function (r) {
+            return r.ok ? r.text() : null;   // 404/5xx → null（未启用 --enable-metrics 的显式判据）
+          }, function () { return null; }).then(function (t) { metricMap[p] = t; }));
+          jobs.push(fetchT('/v1/internal/model-params', 8000).then(function (r) { return r.json(); }, function () { return null; })
+            .then(function (d) {
+              var arr = (d && d.instances) || [];
+              for (var k = 0; k < arr.length; k++) if (arr[k].port === p) { paramMap[p] = arr[k]; break; }
+            }));
+        })(vls[i].port);
+      }
+      return Promise.all(jobs).then(function () {
+        return { insts: insts, metricMap: metricMap, paramMap: paramMap, kvMap: kvMap, gotData: gotData };
+      });
+    })
+    .then(function (res) {
+      if (!res) { return; }
+      if (!res.gotData) {
+        // 取数失败（超时/截断/后端忙）：绝不当成「没有实例」，保留上一帧
+        renderStale('model-manager 本轮不可达（超时或响应不完整），已保留上次画面');
+        return;
+      }
+      var mine = res.insts.filter(function (i) { return i.runtime === 'vllm'; });
+      if (mine.length) {
+        // 成功且有 vLLM 实例：更新缓存与画面
+        _lastGood = mine; _lastGoodAt = Date.now(); _emptySince = 0;
+        render(res.insts, res.metricMap, res.paramMap, res.kvMap, null, false);
+        stampFresh();
+      } else if (!_lastGood.length) {
+        // 成功且本来就没有 vLLM 实例（从未见过）：正常空态
+        render(res.insts, res.metricMap, res.paramMap, res.kvMap, null, false);
+        stampFresh();
+      } else if (Date.now() - _emptySince >= EMPTY_GRACE_MS) {
+        // vLLM 实例消失且持续超过宽限期：认定为已停止（不藏真实停止状态）
+        _emptySince = 0; _lastGood = [];
+        render(res.insts, res.metricMap, res.paramMap, res.kvMap, null, false);
+        stampFresh();
+      } else {
+        // 刚刚消失：可能是后端单轮抖动（如 /v1/models 探测超时被 getVllmInstances 的
+        // 空 catch 吞掉 → 该实例从 instances 里少一项）。先保留画面并倒计时。
+        if (!_emptySince) { _emptySince = Date.now(); }
+        renderStale('本轮未发现 vLLM 实例（疑似上游探测抖动），保留上次画面；连续 '
+          + Math.ceil((EMPTY_GRACE_MS - (Date.now() - _emptySince)) / 1000) + 's 仍为空则判定已停止');
+      }
+    })
+    .catch(function (e) { console.warn('[vllm-page] tick failed:', e); })
+    .then(function () { _busy = false; _lastTickAt = Date.now(); schedule(); });
+}
+function schedule() {
+  if (_timer) clearTimeout(_timer);
+  if (document.hidden) return;   // 后台标签暂停；回前台事件里补刷
+  _timer = setTimeout(tick, POLL_MS);
+}
+document.addEventListener('visibilitychange', function () {
+  if (!document.hidden) { tick(); }
+});
+// 看门狗：判据 = 最后一次成功走完一轮 tick 的时刻（09-23 铁律：不能以请求成败为准）
+setInterval(function () {
+  if (document.hidden) return;
+  if (Date.now() - _lastTickAt > POLL_MS * 4) { _busy = false; tick(); }
+}, 2000);
+tick();
+</script>
+</body>
+</html>

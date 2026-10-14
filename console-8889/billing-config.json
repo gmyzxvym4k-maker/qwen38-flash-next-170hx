@@ -1,0 +1,172 @@
+{
+  "models": {
+    "qwen3.6-35b-a3b-fp8": {
+      "name": "Qwen3.6 35B-A3B (FP8)",
+      "enabled": true,
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "qwen3.8-27b-fp8": {
+      "name": "Qwen3.8 27B (FP8)",
+      "enabled": true,
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "qwen2.5-0.5b-instruct": {
+      "name": "Qwen2.5 0.5B",
+      "enabled": true,
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "qwen3.8-27b-dflash2": {
+      "name": "qwen3.8-27b-dflash2",
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "qwen3.8-27b-w4a16-autoround-w4g32": {
+      "name": "qwen3.8-27b-w4a16-autoround-w4g32",
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "qwen3.8-27b-w4a16-g32-autoround-v2": {
+      "name": "qwen3.8-27b-w4a16-g32-autoround-v2",
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "qwen3.8-27b-int8-w8a16-mtp": {
+      "name": "qwen3.8-27b-int8-w8a16-mtp",
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "qwen3.8-27b-channel-int8-w8a8": {
+      "name": "Qwen3.8 27B Channel-INT8 (w8a8)",
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "qwen3.8-27b-dflash2-w4a16": {
+      "name": "qwen3.8-27b-dflash2-w4a16",
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "qwen3.8-27b-dspark": {
+      "name": "qwen3.8-27b-dspark",
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "qwen3.8-27b-huihui-abliterated-int8": {
+      "name": "qwen3.8-27b-huihui-abliterated-int8",
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "qwen3.8-27b-int4-w4a16-autoround": {
+      "name": "qwen3.8-27b-int4-w4a16-autoround",
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "ornith-1.5-35b-a3b-fp8": {
+      "name": "ornith-1.5-35b-a3b-fp8",
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "ornith-1.5-35b-a3b-nvfp4": {
+      "name": "ornith-1.5-35b-a3b-nvfp4",
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "Qwen3.8-Flash-Next-W4A16-AutoRound-512K": {
+      "name": "Qwen3.8 Flash-Next W4A16 (512K)",
+      "enabled": true,
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "Qwen3.8-Flash-Next-W4A16-AutoRound-1M": {
+      "name": "Qwen3.8 Flash-Next W4A16 (1M)",
+      "enabled": true,
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "Qwen3.8-Flash-Next-NVFP4": {
+      "name": "Qwen3.8 Flash-Next NVFP4",
+      "enabled": true,
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "Qwen3.8-Flash-Next-W4A16-AutoRound": {
+      "name": "Qwen3.8-Flash-Next-W4A16-AutoRound",
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "qwen3.8-27b-twin-709": {
+      "name": "qwen3.8-27b-twin-709",
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    },
+    "Qwen3.8-Flash-Next-Channel-INT8-w8a8": {
+      "name": "Qwen3.8-Flash-Next-Channel-INT8-w8a8",
+      "pricing": {
+        "cached_input_price_per_1m": 0.04,
+        "uncached_input_price_per_1m": 2,
+        "output_price_per_1m": 8
+      }
+    }
+  },
+  "currency": "¥",
+  "unit": "元"
+}

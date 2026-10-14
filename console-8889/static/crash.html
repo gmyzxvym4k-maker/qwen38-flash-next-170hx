@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>崩溃记录 · vLLM Console</title>
+<style>
+:root{--bg:#f1f5f9;--panel:#ffffff;--panel2:#f8fafc;--bd:#e2e8f0;--bd2:#cbd5e1;--tx:#0f172a;--tx2:#475569;--tx3:#94a3b8;--ac:#6366f1;--ac2:#eef2ff;--ok:#059669;--warn:#b45309;--bad:#dc2626;--mono:'SF Mono',Consolas,monospace;--sh:0 1px 3px rgba(28,42,70,.06),0 4px 14px rgba(28,42,70,.05)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.6 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif;padding:14px 16px}
+h1{font-size:16px;margin:0 0 2px}
+.sub{font-size:12px;color:var(--tx3);margin-bottom:12px}
+.kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.kpi{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:10px 16px;box-shadow:var(--sh);min-width:150px}
+.kpi .v{font-size:19px;font-weight:700}
+.kpi .k{font-size:12px;color:var(--tx2)}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.bar input,.bar select{background:var(--panel);border:1px solid var(--bd2);border-radius:8px;padding:6px 10px;font-size:13px;color:var(--tx);outline:none}
+.bar input{width:220px}
+.bar button{background:var(--ac);color:#fff;border:0;border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer}
+.bar .meta{margin-left:auto;font-size:12px;color:var(--tx3)}
+.card{background:var(--panel);border:1px solid var(--bd);border-radius:12px;box-shadow:var(--sh);overflow:auto}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{position:sticky;top:0;background:var(--panel2);text-align:left;padding:8px 12px;border-bottom:1px solid var(--bd);color:var(--tx2);font-weight:600;white-space:nowrap;z-index:1}
+td{padding:8px 12px;border-bottom:1px solid var(--bd);vertical-align:top}
+tr:hover td{background:var(--ac2)}
+.mono{font-family:var(--mono);font-size:12px;white-space:nowrap}
+.badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;color:#fff;white-space:nowrap}
+.tag{display:inline-block;padding:1px 8px;border-radius:6px;font-size:11px;border:1px solid var(--bd2);color:var(--tx2);white-space:nowrap}
+.note{font-size:12px;color:var(--warn);margin-top:3px}
+details{margin-top:4px}
+details summary{cursor:pointer;font-size:12px;color:var(--ac);user-select:none}
+pre{background:#0f172a;color:#e2e8f0;border-radius:8px;padding:10px 12px;font-size:11.5px;line-height:1.5;overflow:auto;max-width:min(70vw,980px);white-space:pre-wrap;word-break:break-all;margin:6px 0 0}
+.empty{padding:40px;text-align:center;color:var(--tx3)}
+.errbar{display:none;background:#fef3c7;border:1px solid #fcd34d;color:#92400e;border-radius:10px;padding:8px 12px;font-size:12.5px;margin-bottom:10px}
+.src-live{background:#6366f1}.src-watchdog{background:#0ea5e9}.src-backfill{background:#94a3b8}
+@media (max-width:800px){.bar input{width:130px}}
+</style>
+</head>
+<body>
+<h1>vLLM / SGLang 崩溃记录</h1>
+<div class="sub">数据源：crash-watch.mjs 守护进程（进程消失监测 + 看门狗「确认离线」+ 日志根因签名 + dmesg OOM/Xid，每 5s 更新）；人工停止与控制台重启连坐不算崩溃，不入表。</div>
+<div class="errbar" id="errbar"></div>
+<div class="kpis">
+  <div class="kpi"><div class="v" id="kTotal">–</div><div class="k">崩溃总次数</div></div>
+  <div class="kpi"><div class="v" id="kWeek">–</div><div class="k">近 7 天</div></div>
+  <div class="kpi"><div class="v" id="kLast" style="font-size:13px;padding-top:4px">–</div><div class="k">最近一次</div></div>
+  <div class="kpi"><div class="v" id="kTop" style="font-size:13px;padding-top:4px">–</div><div class="k">最高频根因</div></div>
+</div>
+<div class="bar">
+  <input id="fq" placeholder="搜索：原因 / 模型 / 端口 / 日志原文…">
+  <select id="fPort"><option value="">全部端口</option></select>
+  <select id="fCause"><option value="">全部原因</option></select>
+  <select id="fSrc">
+    <option value="">全部来源</option>
+    <option value="live">进程监测</option>
+    <option value="watchdog">看门狗</option>
+    <option value="backfill">历史回填</option>
+  </select>
+  <button onclick="reloadCrash()">刷新</button>
+  <span class="meta" id="meta"></span>
+</div>
+<div class="card"><div id="tbody"></div></div>
+
+<script>
+(function () {
+  'use strict';
+  // 徽章配色：按 causeCode 上色，未知/其他统一灰色
+  var COLORS = {
+    CUDA_OOM:'#ea580c', CPU_OOM:'#b45309', ILLEGAL_MEM:'#db2777', NCCL_TIMEOUT:'#7c3aed',
+    SEGFAULT:'#0891b2', ASSERT:'#4f46e5', DISK_FULL:'#65a30d', CUDA_DRV:'#c026d3',
+    ENGINE_DEAD:'#dc2626', WORKER_DIED:'#ef4444', PY_FATAL:'#f59e0b', GPU_XID:'#be123c',
+    CLEAN_STOP:'#059669', SIGNAL_TERM:'#0d9488', UNKNOWN:'#64748b'
+  };
+  var SRC_NAME = { live:'进程监测', watchdog:'看门狗', backfill:'历史回填' };
+  var lastData = null;   // 上一次成功数据（失败时保留画面，09-25/10-03 铁律：失败不清屏）
+  var timer = null, stopped = false;
+
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]; }); }
+  function safeRun(fn, tag) { try { fn(); } catch (e) { console.error('[crash-page] ' + (tag || '') + ': ' + (e && e.stack || e)); } }
+
+  function render() {
+    var box = document.getElementById('tbody');
+    if (!lastData || !lastData.records || !lastData.records.length) {
+      box.innerHTML = '<div class="empty">' + (lastData ? '暂无崩溃记录 —— 引擎一直健康 🎉（新崩溃将在 1 分钟内出现在这里）' : '加载中…') + '</div>';
+      return;
+    }
+    var q = document.getElementById('fq').value.trim().toLowerCase();
+    var fp = document.getElementById('fPort').value, fc = document.getElementById('fCause').value, fs = document.getElementById('fSrc').value;
+    var recs = lastData.records.filter(function (r) {
+      if (fp && String(r.port) !== fp) return false;
+      if (fc && r.causeCode !== fc) return false;
+      if (fs && r.source !== fs) return false;
+      if (q) {
+        var hay = (r.tsText + ' ' + (r.port||'') + ' ' + (r.model||'') + ' ' + (r.cause||'') + ' ' + (r.causeCode||'') + ' ' + (r.note||'') + ' ' + ((r.evidence||[]).join(' '))).toLowerCase();
+        if (hay.indexOf(q) < 0) return false;
+      }
+      return true;
+    });
+    var html = '<table><thead><tr><th>时间</th><th>端口</th><th>模型</th><th>崩溃原因</th><th>来源</th></tr></thead><tbody>';
+    for (var i = 0; i < recs.length; i++) {
+      var r = recs[i];
+      var color = COLORS[r.causeCode] || COLORS.UNKNOWN;
+      var ev = (r.evidence || []);
+      html += '<tr>'
+        + '<td class="mono">' + esc(r.tsText) + (r.tsExact ? '' : '<span class="tag" style="margin-left:6px">观测时刻</span>') + '</td>'
+        + '<td class="mono">' + esc(r.port == null ? '—' : r.port) + '</td>'
+        + '<td>' + esc(r.model || '—') + '</td>'
+        + '<td><span class="badge" style="background:' + color + ';max-width:460px;white-space:normal;text-align:left;line-height:1.45">' + esc(r.cause) + '</span>'
+        + (r.note ? '<div class="note">↻ ' + esc(r.note) + '</div>' : '')
+        + (ev.length ? '<details><summary>证据原文（' + ev.length + ' 行）</summary><pre>' + ev.map(esc).join('\n') + '</pre></details>' : '')
+        + (r.logFile ? '<div style="font-size:11px;color:var(--tx3);margin-top:3px">' + esc(r.logFile) + '</div>' : '')
+        + '</td>'
+        + '<td><span class="tag src-' + esc(r.source) + '" style="color:#fff;border:0">' + (SRC_NAME[r.source] || esc(r.source)) + '</span></td>'
+        + '</tr>';
+    }
+    html += '</tbody></table>';
+    if (!recs.length) html = '<div class="empty">当前筛选条件下没有记录（共 ' + lastData.records.length + ' 条）</div>';
+    box.innerHTML = html;
+  }
+
+  function renderKpis() {
+    try {
+      var rs = lastData && lastData.records || [];
+      document.getElementById('kTotal').textContent = rs.length;
+      var week = Date.now() - 7 * 86400000;
+      document.getElementById('kWeek').textContent = rs.filter(function (r) { return r.ts >= week; }).length;
+      document.getElementById('kLast').textContent = rs.length ? rs[0].tsText : '—';
+      var cnt = {};
+      rs.forEach(function (r) { cnt[r.cause] = (cnt[r.cause] || 0) + 1; });
+      var top = Object.keys(cnt).sort(function (a, b) { return cnt[b] - cnt[a]; })[0];
+      document.getElementById('kTop').textContent = top ? (cnt[top] + ' 次 · ' + top) : '—';
+      // 筛选项增量补全（保留用户当前选择）
+      fillSel('fPort', rs.map(function (r) { return String(r.port == null ? '' : r.port); }).filter(Boolean), function (v) { return v + ' 端口'; });
+      fillSel('fCause', rs.map(function (r) { return r.causeCode; }), function (v) {
+        var f = rs.filter(function (r) { return r.causeCode === v; })[0]; return v + '（' + ((f && f.cause) || '').slice(0, 14) + '）';
+      });
+    } catch (e) { console.error('[crash-page] kpi: ' + e); }
+  }
+  function fillSel(id, vals, label) {
+    var sel = document.getElementById(id), cur = sel.value;
+    var uniq = Array.from(new Set(vals)).sort();
+    if (sel.dataset.opts === uniq.join(',')) return;
+    sel.dataset.opts = uniq.join(',');
+    sel.innerHTML = '<option value="">' + (id === 'fPort' ? '全部端口' : '全部原因') + '</option>' + uniq.map(function (v) { return '<option value="' + esc(v) + '">' + esc(label(v)) + '</option>'; }).join('');
+    sel.value = cur;
+  }
+
+  function setErr(msg) {
+    var b = document.getElementById('errbar');
+    b.style.display = msg ? 'block' : 'none';
+    b.textContent = msg || '';
+  }
+
+  function load(manual) {
+    // 自建超时（不用 AbortSignal.timeout，09-23 铁律）；失败保留上一帧画面
+    var ac = new AbortController();
+    var to = setTimeout(function () { ac.abort(); }, 7000);
+    fetch('/static/crash-records.json?_=' + Date.now(), { signal: ac.signal, cache: 'no-store' })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.text();
+      })
+      .then(function (txt) {
+        clearTimeout(to);
+        lastData = JSON.parse(txt);
+        setErr('');
+        safeRun(renderKpis, 'kpis');
+        safeRun(render, 'render');
+        document.getElementById('meta').textContent = '数据更新于 ' + new Date(lastData.updatedAt || Date.now()).toLocaleTimeString('zh-CN') + (manual ? '（手动）' : '') + ' · 每 10s 自动刷新';
+      })
+      .catch(function (e) {
+        clearTimeout(to);
+        setErr('读取崩溃记录失败：' + (e && e.message || e) + (lastData ? '（显示的是上次成功的数据）' : '') + ' —— 若持续失败，检查 crash-watch 守护进程：systemctl --user status fnx-crash-watch');
+        if (!lastData) safeRun(render, 'render-empty');
+      })
+      .finally(function () { schedule(); });
+  }
+  function schedule() {
+    if (stopped) return;
+    clearTimeout(timer);
+    timer = setTimeout(function () { if (!document.hidden) load(false); else schedule(); }, 10000);
+  }
+  ['fq'].forEach(function (id) { document.getElementById(id).addEventListener('input', function () { safeRun(render); }); });
+  ['fPort','fCause','fSrc'].forEach(function (id) { document.getElementById(id).addEventListener('change', function () { safeRun(render); }); });
+  // 回前台立刻补一帧（09-23 铁律：visibilitychange 之外补 pageshow/focus）
+  function wake() { if (!document.hidden) load(false); }
+  document.addEventListener('visibilitychange', wake);
+  window.addEventListener('pageshow', wake);
+  window.reloadCrash = load; // 刷新按钮
+  load(true);
+})();
+</script>
+</body>
+</html>

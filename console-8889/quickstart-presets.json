@@ -1,0 +1,86 @@
+{
+  "flashnext": {
+    "gpu": 0,
+    "port": 18420,
+    "scriptModel": "qwen3.8-flash-next-w4a16",
+    "presets": [
+      {
+        "key": "w8a8-pp3-1m-mtp4",
+        "name": "Channel-INT8-w8a8 · 1M · PP3 · MTP4 · PLE-INT8盘 · 二级缓存160G· t0.6〔#14已修·生产定版〕",
+        "engine": "script",
+        "standard": true,
+        "port": 18420,
+        "modelName": "Qwen3.8-Flash-Next-Channel-INT8-w8a8",
+        "log": "/home/ll/deploy/vllm-flash-next-0310.log",
+        "params": {
+          "port": 18420,
+          "modelName": "Qwen3.8-Flash-Next-Channel-INT8-w8a8",
+          "servedName": "qwen3.8-flash-next",
+          "ctxLen": "",
+          "maxModelLen": "1048576",
+          "longCtx": "1m",
+          "parallelMode": "pp",
+          "gpuCount": "3",
+          "maxNumSeqs": "4",
+          "maxBatchedTokens": "8192",
+          "blockSize": "1616",
+          "gpuMemUtil": "0.95",
+          "mtp": "1",
+          "mtpTokens": "4",
+          "kvoff": "simple",
+          "pleInt8": "1",
+          "pleLoc": "heap",
+          "thinking": "1",
+          "thinkingEffort": "xhigh",
+          "prefixCaching": "1",
+          "chunkedPrefill": "1",
+          "asyncScheduling": "1",
+          "runtime": "vllm",
+          "kvoffGiB": "160",
+          "temperature": "0.6"
+        },
+        "note": "10-11 定版：官方 vLLM 0.31 SimpleCPUOffload load 路径缺 compute-done 跨流屏障（上游 #60078/#47324 未合并）导致 CUDA illegal memory access，已由 rt-patch #14（dsh_simple_offload_rt.py）在引擎侧修复；#13 握手 clamp 同步在位（PP2 16.27MiB/块 > PP0/1 13.02MiB/块，CPU 池钳 3355）。"
+      }
+    ]
+  },
+  "uncensored": {
+    "gpu": 0,
+    "port": 18430,
+    "scriptModel": "qwen3.8-flash-next-uncensored",
+    "presets": [
+      {
+        "key": "unc-1m-mtp4-xhigh",
+        "name": "固化-1M-MTP4-xhigh-KV96G（当前生产配置）",
+        "engine": "script",
+        "standard": true,
+        "port": 18430,
+        "modelName": "qwen3.8-flash-next-uncensored",
+        "envFile": "/home/ll/deploy/uncensored/launch.env",
+        "log": "/home/ll/deploy/vllm-uncensored-18430.log",
+        "params": {
+          "modelName": "qwen3.8-flash-next-uncensored",
+          "port": "18430",
+          "servedName": "qwen3.8-flash-next-uncensored",
+          "maxModelLen": "1048576",
+          "gpuMemUtil": "0.95",
+          "maxNumSeqs": "4",
+          "blockSize": "1632",
+          "maxBatchedTokens": "8192",
+          "prefixCaching": "1",
+          "chunkedPrefill": "1",
+          "asyncScheduling": "1",
+          "kvCacheQuant": "auto",
+          "thinking": "1",
+          "thinkingEffort": "xhigh",
+          "mtp": "1",
+          "mtpTokens": "4",
+          "enforceEager": "0",
+          "kvoff": "simple",
+          "kvoffGiB": "96",
+          "longCtx": "1m"
+        },
+        "note": "[官方 vLLM 0.30.0 栈] 固化自当前 Uncensored-NVFP4-FP8PLE 定稿启动配置：1M(YaRN×4 副本)+block1632+MTP×4+seqs4+gpu-mem0.95+TP1×PP2，思考=xhigh，CPU KV 二级缓存=SimpleCPUOffloadConnector 96GiB。启动件=/home/ll/deploy/uncensored/{start-uncensored.sh,uncensored-inner.sh,stop-uncensored.sh}，端口 18430，served 名 qwen3.8-flash-next-uncensored（别名 qwen3.8-flash-next-unc）。冷启动约 4~8 分钟（须等 18420 让卡或双卡空闲）。"
+      }
+    ]
+  }
+}

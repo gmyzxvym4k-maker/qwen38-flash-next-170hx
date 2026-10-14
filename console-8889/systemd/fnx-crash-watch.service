@@ -1,0 +1,18 @@
+# /home/ll/.config/systemd/user/fnx-crash-watch.service
+# vLLM 崩溃记录守护进程（「崩溃记录」标签数据源，10-10 上线）
+# 独立进程做实例缺席监测/看门狗日志解析/日志根因分析，产出 static/crash-records.json。
+# 不依赖、不改动 dsh-console —— 控制台重启与否都不影响本进程。
+[Unit]
+Description=vLLM crash recorder (8889 console 崩溃记录 data source)
+
+[Service]
+ExecStart=/usr/local/bin/node /home/ll/deploy/crash-watch.mjs
+WorkingDirectory=/home/ll/deploy
+Restart=always
+RestartSec=10
+Nice=10
+Environment=HOME=/home/ll
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

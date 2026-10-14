@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "thresholdC": 80,
+  "holdSec": 5,
+  "graceSec": 0,
+  "cooldownMin": 5
+}

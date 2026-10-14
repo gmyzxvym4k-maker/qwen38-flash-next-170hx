@@ -234,6 +234,7 @@ bash scripts/verify-deployment.sh
 | `scripts/` | 全部可执行件（含 `apply-patches.py`、`verify-deployment.sh`） |
 | `scripts/host/`、`systemd-units/` | udev 规则、gen2 钩子、功耗脚本、systemd 单元 |
 | `tools/` | 旧栈生产快照（cmdline / env / 启动画像 / metrics 摘录，2026-09-23） |
+| **`console-8889/`** | **vLLM 管理台（8889 控制台）全量现行快照**：server.js + 六页面 + static 资产 + gpu-ctl/cpu-ctl + 崩溃守护 + systemd 单元 + 配置样例（脱敏说明见其 README §3，2026-10-14） |
 | **`stack-0300/`** | **当前生产栈全套**：运行时补丁、启动/停止/看门狗、**内存二级缓存（KVCache）实现与验收工具链**、生产真值快照、README-0300.md（§11=生产定版） |
 
 ---

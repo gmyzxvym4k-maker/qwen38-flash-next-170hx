@@ -1,0 +1,24 @@
+[Unit]
+Description=vLLM Management Console
+After=network.target
+
+[Service]
+Type=simple
+# 按实际情况修改 node 路径与部署目录
+ExecStart=/usr/local/bin/node /home/ll/deploy/server.js
+WorkingDirectory=/home/ll/deploy
+Restart=always
+RestartSec=5
+# 【必须保留】否则 systemctl restart 会连带杀掉控制台启动的 vLLM/SGLang 实例
+KillMode=process
+StandardOutput=append:/home/ll/deploy/server.log
+StandardError=append:/home/ll/deploy/server-error.log
+Environment=HOME=/home/ll
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# 可选：固定后端端口（缺省自动扫描本机进程）
+#Environment=VLLM_PORT=8000
+# 可选：改控制台端口（缺省 8889）
+#Environment=SERVER_PORT=8889
+
+[Install]
+WantedBy=default.target

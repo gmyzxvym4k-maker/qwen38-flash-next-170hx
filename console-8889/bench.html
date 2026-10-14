@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bench Console · 基准测试</title>
+<link rel="icon" type="image/png" href="data:image/png;base64,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">
+
+<script src="/static/chart.umd.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js'"></script>
+<style>
+:root{--bg:#f1f5f9;--panel:#ffffff;--panel2:#f8fafc;--bd:#e2e8f0;--bd2:#cbd5e1;--tx:#0f172a;--tx2:#475569;--ac:#6366f1;--ac2:#eef2ff;--ok:#059669;--warn:#b45309;--bad:#dc2626;--mono:'SF Mono',Consolas,monospace;--sh:0 1px 3px rgba(28,42,70,.06),0 4px 14px rgba(28,42,70,.05)}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font:14px/1.6 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif;padding:14px 16px}
+header{display:flex;align-items:baseline;gap:14px;margin-bottom:4px}
+h1{font-size:21px;font-weight:700;letter-spacing:.3px}
+h1 .logo{color:var(--ac)}
+.sub{color:var(--tx2);font-size:12px;margin-bottom:20px}
+.grid{display:grid;grid-template-columns:320px 1fr;gap:18px;align-items:start;max-width:1400px}
+.card{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:16px 18px;margin-bottom:16px;box-shadow:var(--sh)}
+.card h3{font-size:12px;color:var(--tx2);letter-spacing:1.5px;margin-bottom:12px;font-weight:600}
+.svc{border:1px solid var(--bd);border-radius:9px;padding:10px 13px;margin-bottom:8px;cursor:pointer;transition:.15s;background:var(--panel2)}
+.svc:hover{border-color:var(--ac)}
+.svc.sel{border-color:var(--ac);background:var(--ac2);box-shadow:inset 0 0 0 1px var(--ac)}
+.svc .nm{font-weight:600;font-size:13.5px}
+.svc .ds{font-size:11px;color:var(--tx2)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;background:var(--bad)}
+.dot.ok{background:var(--ok)}
+label{display:block;font-size:12px;color:var(--tx2);margin:12px 0 5px;font-weight:500}
+input,select{width:100%;background:#fff;border:1px solid var(--bd2);color:var(--tx);border-radius:7px;padding:7px 10px;font-size:13px;outline:none;transition:.15s}
+input:focus,select:focus{border-color:var(--ac);box-shadow:0 0 0 3px rgba(99,102,241,.12)}
+.row{display:flex;gap:10px}.row>*{flex:1}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{padding:4px 12px;border:1px solid var(--bd2);border-radius:14px;cursor:pointer;font-size:12px;user-select:none;background:#fff;color:var(--tx2)}
+.chip.on{border-color:var(--ac);color:var(--ac);background:var(--ac2);font-weight:600}
+.chip.locked{opacity:.45;pointer-events:none}
+.chip.big{padding:7px 14px;font-size:13px}
+#go{width:100%;margin-top:16px;padding:11px;background:linear-gradient(135deg,#6366f1,#818cf8);border:none;color:#fff;border-radius:9px;font-size:15px;font-weight:600;cursor:pointer;box-shadow:0 3px 10px rgba(99,102,241,.3);transition:.15s}
+#go:hover{filter:brightness(1.06)}
+#go:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+#stop{width:100%;margin-top:8px;padding:8px;background:#fff;border:1px solid var(--bad);color:var(--bad);border-radius:9px;cursor:pointer}
+#stop:hover{background:#fdf1f0}
+.mini{flex:0 0 auto !important;width:auto;margin-top:0;padding:7px 12px;background:#fff;border:1px solid var(--bd2);color:var(--tx2);border-radius:7px;font-size:12px;cursor:pointer;transition:.15s}
+.mini:hover{border-color:var(--ac);color:var(--ac);background:var(--ac2)}
+.chip .x{margin-left:5px;opacity:.55;font-weight:700}
+.chip .x:hover{opacity:1;color:var(--bad)}
+.pfErr{color:var(--bad)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:7px 10px;text-align:right;border-bottom:1px solid var(--bd)}
+th{color:var(--tx2);font-weight:500;font-size:12px;background:var(--panel2)}
+th:first-child,td:first-child{text-align:left}
+td.num{font-family:var(--mono)}
+.pos{color:var(--ok);font-weight:600}.neg{color:var(--bad);font-weight:600}
+.stage{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.pill{padding:3px 12px;border-radius:12px;font-size:12px;background:var(--panel2);border:1px solid var(--bd);font-weight:500}
+.pill.run{border-color:#fbbf24;color:var(--warn);background:#fffbeb}
+.pill.done{border-color:#6ee7b7;color:var(--ok);background:#ecfdf5}
+.pill.err{border-color:#fca5a5;color:var(--bad);background:#fef2f2}
+.pbar{height:7px;background:var(--panel2);border-radius:4px;overflow:hidden;margin:10px 0}
+.pbar>i{display:block;height:100%;background:linear-gradient(90deg,var(--ac),#a5b4fc);width:0;transition:.4s;border-radius:4px}
+.tabs{display:flex;gap:4px;margin-bottom:14px;background:var(--panel2);padding:4px;border-radius:9px;width:fit-content}
+.tab{padding:6px 16px;border-radius:7px;cursor:pointer;font-size:13px;color:var(--tx2);font-weight:500;transition:.15s}
+.tab.on{background:#fff;color:var(--tx);box-shadow:0 1px 3px rgba(28,42,70,.1)}
+.mgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
+.mgrid6{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:14px}
+.stat{background:var(--panel2);border:1px solid var(--bd);border-radius:10px;padding:11px 14px}
+.stat .v{font-size:21px;font-weight:700;font-family:var(--mono);color:var(--tx)}
+.stat .l{font-size:11px;color:var(--tx2);margin-top:1px}
+.chartbox{position:relative;height:250px;margin-bottom:6px}
+.chartbox.live{height:190px}
+.chartbox canvas{max-height:none}
+.hist td{cursor:pointer}
+.hist tr:hover{background:var(--ac2)}
+.small{font-size:11px;color:var(--tx2)}
+h2{font-size:15px;margin-bottom:8px}
+#evLog{max-height:210px;overflow:auto;border:1px solid var(--bd);border-radius:9px;background:var(--panel2)}
+.ev{padding:7px 12px;border-bottom:1px solid var(--bd);font-size:12.5px;display:flex;gap:8px;align-items:baseline;animation:evin .3s ease}
+.ev:last-child{border-bottom:none}
+.ev .tm{color:var(--tx2);font-family:var(--mono);font-size:11px;flex:none}
+.ev .tt{font-weight:600;flex:none}
+.ev .tx{font-family:var(--mono);font-size:11.5px;color:var(--tx2);word-break:break-all}
+.ev.final{background:#ecfdf5}.ev.final .tt{color:var(--ok)}
+.ev.type .tt{color:var(--ac)}
+.ev.conc .tt{color:#8b5cf6}
+.ev.pf .tt{color:var(--warn)}
+@keyframes evin{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+#lastSumm{display:none;background:linear-gradient(135deg,#eef2ff,#ecfdf5);border:1px solid #c7d2fe;border-radius:9px;padding:9px 14px;margin:10px 0;font-size:13.5px}
+#lastSumm b{font-family:var(--mono)}
+#finalCard{display:none;border:2px solid var(--ok);box-shadow:0 4px 18px rgba(24,154,82,.12)}
+#finalCard h3{color:var(--ok)}
+.fin-tbl td,.fin-tbl th{padding:5px 9px;font-size:12.5px}
+.rank{display:inline-block;min-width:22px;color:var(--tx2);font-family:var(--mono)}
+.bar-in{display:inline-block;height:9px;border-radius:4px;background:linear-gradient(90deg,#6366f1,#a5b4fc);vertical-align:middle;margin-left:6px}
+.dbtn{border:1px solid var(--bd2);background:#fff;color:var(--ac);border-radius:6px;padding:2px 10px;cursor:pointer;font-size:12px;white-space:nowrap}
+.dbtn:hover{border-color:var(--ac);background:var(--ac2)}
+#detailMask{display:none;position:fixed;inset:0;background:rgba(20,30,50,.45);z-index:50;padding:26px 14px;overflow:auto}
+#detailPanel{max-width:1120px;margin:0 auto;background:var(--panel);border-radius:14px;box-shadow:0 12px 48px rgba(20,30,50,.35);padding:20px 24px}
+#detailHead{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;border-bottom:1px solid var(--bd);padding-bottom:12px;margin-bottom:14px}
+#detailClose{border:1px solid var(--bd2);background:#fff;border-radius:8px;padding:4px 12px;cursor:pointer;font-size:14px;flex:none;color:var(--tx2)}
+#detailClose:hover{border-color:var(--bad);color:var(--bad)}
+.dSec{margin-bottom:20px}
+.dSec h4{font-size:13px;color:var(--ac);margin-bottom:8px;letter-spacing:.5px;border-left:3px solid var(--ac);padding-left:8px}
+.dCap{font-size:11.5px;color:var(--tx2);margin:6px 0 4px}
+.cmpHead{display:flex;gap:18px;align-items:center;font-size:12.5px;margin-bottom:8px;flex-wrap:wrap}
+.cmpHead .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.cmpDelta{font-family:var(--mono)}
+#liveCard{display:none}
+.cur-line{font-size:12.5px;color:var(--tx);margin-top:6px;font-family:var(--mono)}
+/* 09-29 配置快照 */
+.env-pre{white-space:pre-wrap;word-break:break-all;font-size:11px;line-height:1.5;background:var(--panel2);border:1px solid var(--bd);border-radius:8px;padding:8px;max-height:220px;overflow:auto;font-family:var(--mono)}
+details{margin:8px 0}
+details summary{cursor:pointer;color:var(--tx2);font-size:12px}
+.envdiff td{background:rgba(239,68,68,.07)}
+#envNote{margin-left:8px;color:var(--tx2)}
+</style></head><body>
+<header><h1><span class="logo">⚡</span> Bench Console</h1><span class="small">LLM 推理基准测试台 v2.2.1（内嵌移植） · 实时监控 / 分段总结 / 历史 A/B 对比</span></header>
+<div class="sub">三种测试模式各自独立 · 实时流速监控 + 分段总结 + 最终汇总 · 结果落盘 bench-results/</div>
+<div class="grid">
+<div>
+  <div class="card"><h3>服务选择</h3><div id="svcs"></div></div>
+  <div class="card"><h3>测试模式（独立运行）</h3>
+    <div class="chips" id="modeChips">
+      <span class="chip big on" data-m="single">单流解码 · 13类</span>
+      <span class="chip big" data-m="conc">并发档位</span>
+      <span class="chip big" data-m="prefill">预填充 TTFT</span>
+    </div>
+    <div class="small" id="modeHint" style="margin-top:8px">逐类型 × N 轮，测各类提示词的 decode tok/s 与 TTFT。</div>
+  </div>
+  <div class="card" id="cardDecode"><h3>解码参数</h3>
+    <label id="lblSuite">测试集</label>
+    <select id="suite"><option value="13">13 类（完整）</option><option value="6">6 类（快速）</option></select>
+    <div class="row">
+      <div><label>每类轮数</label><select id="reps"><option>1</option><option selected>3</option><option>5</option></select></div>
+      <div><label>max_tokens</label><input id="mt" value="700" type="number"></div>
+    </div>
+    <div id="concWrap" style="display:none">
+      <label>并发档位</label>
+      <div class="chips" id="conc"></div>
+      <div class="small" style="margin-top:8px">每档同时发 c 条（提示词轮换），测聚合 tok/s。</div>
+    </div>
+  </div>
+  <div class="card" id="cardPf" style="display:none"><h3>预填充参数</h3>
+    <label>每档轮数</label><select id="repsPf"><option>1</option><option selected>3</option><option>5</option></select>
+    <label>上下文长度档位 <span class="small" id="pfCtxNote"></span></label>
+    <div class="chips" id="pfLens"></div>
+    <div class="row" style="margin-top:8px;align-items:flex-end">
+      <div><label>自定义档位（tokens）</label><input id="pfCustom" type="number" min="256" max="1048576" placeholder="256 ~ 1048576"></div>
+      <button class="mini" id="pfAdd">＋ 加档</button><button class="mini" id="pfClear">清空自定义</button>
+    </div>
+    <div class="small" style="margin-top:8px">测 TTFT ≈ prefill 时间，得 prefill tok/s；每轮自动换材料避免前缀缓存命中。</div>
+    <div class="small">档位从 1K 一路到 <b>1M（1048576 tok）</b>。超出引擎 max_model_len 的档在开测前即跳过并记进事件流，不会打断其余档位；顶格档按引擎上限留 1.5% 分词余量收口，避免白跑几百秒。</div>
+    <div class="small">参考耗时：本机 prefill ≈4,700 tok/s ⇒ 1M 档单轮约 <b>3.7 分钟</b>（3 轮 + 轮间冲缓存约 12 分钟）；256K 档单轮约 55s。</div>
+  </div>
+  <div class="card"><h3>运行</h3>
+    <div class="row">
+      <div><label>静置秒数</label><input id="settle" value="10" type="number"></div>
+      <div><label>轮间静置秒</label><input id="repSettle" value="3" type="number"></div>
+      <div><label>标签</label><input id="tag" placeholder="如 cpu250w / k5test"></div>
+    </div>
+    <label class="small" style="display:flex;gap:6px;align-items:center;margin-top:6px"><input type="checkbox" id="roundIso" checked> 轮次独立：轮间等引擎排空＋冲前缀缓存（支持时）＋每轮 salt 前缀防缓存命中</label>
+    <button id="go">▶ 开始 · 单流解码 13 类</button>
+    <button id="stop">■ 停止</button>
+  </div>
+  <div class="card"><h3>服务指标（实时）</h3><div id="live" class="small">—</div></div>
+</div>
+<div>
+  <div class="card" id="liveCard">
+    <div class="stage"><h3 style="margin:0">实时监控</h3><span class="small" id="liveHead"></span></div>
+    <div class="mgrid6" id="liveStats"></div>
+    <div class="chartbox live"><canvas id="chLive"></canvas></div>
+    <div class="cur-line" id="curLine"></div>
+    <h3 style="margin-top:12px">分段总结（每测完一段即出现）</h3>
+    <div id="evLog"></div>
+  </div>
+  <div class="card" id="runCard">
+    <div class="stage"><h3 style="margin:0">测试进度</h3><span class="pill" id="pill">空闲</span><span class="small" id="stageNote"></span><span class="small" id="envNote"></span></div>
+    <div class="pbar"><i id="pbar"></i></div>
+    <div class="small" id="progTx"></div>
+    <div id="lastSumm"></div>
+  </div>
+  <div class="card" id="finalCard"><h3>🏁 最终汇总</h3><div id="finalBody"></div></div>
+  <div class="card">
+    <div class="tabs">
+      <div class="tab on" data-t="single">单流逐类型</div>
+      <div class="tab" data-t="conc">并发</div>
+      <div class="tab" data-t="prefill">预填充</div>
+      <div class="tab" data-t="history">历史与对比</div>
+    </div>
+    <div id="tab-single">
+      <div class="mgrid" id="sgStats"></div>
+      <div class="dCap">decode tok/s（按类型）</div>
+      <div class="chartbox"><canvas id="chSingle"></canvas></div>
+      <div class="dCap">TTFT ms（按类型）</div>
+      <div class="chartbox"><canvas id="chSingleTtft"></canvas></div>
+      <div style="overflow:auto;max-height:340px;margin-top:10px"><table id="tbSingle"></table></div>
+    </div>
+    <div id="tab-conc" style="display:none">
+      <div class="chartbox"><canvas id="chConc"></canvas></div>
+      <div style="overflow:auto;margin-top:10px"><table id="tbConc"></table></div>
+    </div>
+    <div id="tab-prefill" style="display:none">
+      <div class="chartbox"><canvas id="chPf"></canvas></div>
+      <div style="overflow:auto;margin-top:10px"><table id="tbPf"></table></div>
+    </div>
+    <div id="tab-history" style="display:none">
+      <h2>历史记录 <span class="small">（点「详情」看每次运行的全部逐类型数据 · 点两行 = A/B 图形化对比）</span></h2>
+      <div style="overflow:auto;max-height:260px"><table id="tbHist" class="hist"></table></div>
+      <div id="cmpWrap" style="display:none;margin-top:14px">
+        <h2 id="cmpTitle"></h2>
+        <div class="cmpHead"><span><span class="sw" style="background:#6366f1"></span>A</span><span><span class="sw" style="background:#f59e0b"></span>B</span><span class="small">红=下降 绿=上升（B 相对 A）</span></div>
+        <div class="mgrid" id="cmpStats"></div>
+        <div id="cmpSecS" style="display:none"><div class="dCap" id="cmpCapS">逐类型 decode tok/s 对比</div><div class="chartbox"><canvas id="chCmpS"></canvas></div></div>
+        <div id="cmpSecC" style="display:none"><div class="dCap">并发聚合 tok/s 对比</div><div class="chartbox"><canvas id="chCmpC"></canvas></div></div>
+        <div id="cmpSecP" style="display:none"><div class="dCap">预填充 tok/s 对比</div><div class="chartbox"><canvas id="chCmpP"></canvas></div></div>
+        <div id="cmpSecE" style="display:none"><div class="dCap" id="cmpCapE">配置差异（vLLM/模型配置快照，红底=两侧不一致）</div><div style="overflow:auto;max-height:320px;margin-top:6px"><table id="tbCmpEnv"></table></div></div>
+        <div style="overflow:auto;max-height:420px;margin-top:10px"><table id="tbCmp"></table></div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+<div id="detailMask">
+  <div id="detailPanel">
+    <div id="detailHead"><div id="detailTitle"></div><button id="detailClose">✕ 关闭</button></div>
+    <div id="detailBody"></div>
+  </div>
+</div>
+<script>
+// ====== 与管理台同款：/v1/internal/ 请求自动附带 X-Console-Token（401 弹窗补录重试） ======
+(function () {
+  const of = window.fetch.bind(window);
+  window.fetch = function (u, o) {
+    o = o || {};
+    const url = (typeof u === 'string') ? u : (u && u.url) || '';
+    const isInternal = url.indexOf('/v1/internal/') === 0;
+    const withTok = (hdr) => { o.headers = Object.assign({}, o.headers || (u && u.headers) || {}, { 'X-Console-Token': hdr }); return o; };
+    if (isInternal) { const t = localStorage.getItem('consoleToken'); if (t) withTok(t); }
+    return of(u, o).then(function (r) {
+      if (isInternal && r.status === 401) {
+        const t = prompt('请输入控制台管理口令（console-auth.json 的 token；留空取消）：');
+        if (t && t.trim()) { localStorage.setItem('consoleToken', t.trim()); return of(u, withTok(t.trim())); }
+      }
+      return r;
+    });
+  };
+})();
+</script>
+<script>
+var cur={single:null,conc:null,prefill:null,order:null,summary:null};
+var selSvc=null, selModel=null, selConc=[1,2,4,8], selPf=[4096,16384,32768], histSel=[];
+var mode='single', running=false, wasRunning=false;
+var liveT=[]; // 实时图 x 轴时间戳（回调引用全局，避免图表未重建前闭包过期）
+var chartS=null, chartST=null, chartC=null, chartP=null, chartL=null;
+var chartCS=null, chartCC=null, chartCP=null;
+var chartD1=null, chartD2=null, chartD3=null, chartD4=null;
+var sig={single:'',conc:'',prefill:'',summary:'',ev:'',live:'',fin:''};
+// 图表公共配置：固定高度容器 + 关闭动画 + 防抖 resize，杜绝轮询重绘导致的页面抖动
+var CHOPT={responsive:true,maintainAspectRatio:false,animation:false,resizeDelay:200,
+  transitions:{active:{animation:{duration:0}},resize:{animation:{duration:0}}},
+  plugins:{legend:{display:false}}};
+
+function h(tag,cls,html){var e=document.createElement(tag);if(cls)e.className=cls;if(html!=null)e.innerHTML=html;return e;}
+function fmtPct(v){if(v==null)return '—';var s=(v>=0?'+':'')+(v*100).toFixed(1)+'%';var cls=v>0.005?'pos':(v<-0.005?'neg':'');return '<span class="'+cls+'">'+s+'</span>';}
+function fmtK(n){n=+n||0;if(n>=1048576){var m=n/1048576;return (m%1?m.toFixed(1):m)+'M'}if(n>=1024){var k=n/1024;return (k%1?k.toFixed(1):k)+'K'}return ''+n}
+// TTFT 显示：1M 档单轮可达数百秒，写 ms 会是一串没人读的 6 位数
+function fmtTtft(v){if(v==null||!v)return '—';return v>=10000?(v/1000).toFixed(1)+' s':v+' ms'}
+function j(){try{return JSON.stringify([].slice.call(arguments))}catch(e){return ''}}
+
+// services
+function loadSvcs(){
+  fetch('/v1/internal/bench/services').then(r=>r.json()).then(function(list){
+    var w=document.getElementById('svcs'); w.innerHTML='';
+    list.forEach(function(s,i){
+      var d=h('div','svc'+(i===0?' sel':''));
+      d.innerHTML='<span class="dot'+(s.healthy?' ok':'')+'"></span><span class="nm">'+s.name+'</span><div class="ds">'+s.desc+(s.model?' · '+s.model:' · 未响应')+'</div>';
+      d.onclick=function(){if(running)return;document.querySelectorAll('.svc').forEach(function(x){x.classList.remove('sel')});d.classList.add('sel');selSvc=s;selModel=s.model;};
+      if(i===0){selSvc=s;selModel=s.model;}
+      w.appendChild(d);
+    });
+  });
+}
+// mode chips
+var MODE_LABEL={single:'▶ 开始 · 单流解码 13 类',conc:'▶ 开始 · 并发档位测试',prefill:'▶ 开始 · 预填充测试'};
+var MODE_HINT={single:'逐类型 × N 轮，测各类提示词的 decode tok/s 与 TTFT。',conc:'按并发档位 c=1…32 各测 N 轮聚合吞吐，与其他模式互不影响。',prefill:'长上下文 TTFT 法测 prefill tok/s，档位 1K～1M，每档 N 轮；超引擎上下文的档自动跳过。'};
+document.querySelectorAll('#modeChips .chip').forEach(function(c){
+  c.onclick=function(){
+    if(running)return;
+    mode=c.dataset.m;
+    document.querySelectorAll('#modeChips .chip').forEach(function(x){x.classList.toggle('on',x===c)});
+    document.getElementById('cardDecode').style.display=(mode==='prefill'?'none':'');
+    document.getElementById('cardPf').style.display=(mode==='prefill'?'':'none');
+    document.getElementById('concWrap').style.display=(mode==='conc'?'':'none');
+    document.getElementById('lblSuite').textContent=(mode==='conc'?'提示词来源（轮换）':'测试集');
+    document.getElementById('modeHint').textContent=MODE_HINT[mode];
+    document.getElementById('go').textContent=MODE_LABEL[mode];
+  };
+});
+// conc chips
+[1,2,3,4,6,8,12,16,20,23].forEach(function(c){
+  var el=h('span','chip'+([1,2,4,8].indexOf(c)>=0?' on':''),'c='+c);el.dataset.c=c;
+  el.onclick=function(){el.classList.toggle('on');readConc();};
+  document.getElementById('conc').appendChild(el);
+});
+function readConc(){selConc=[];document.querySelectorAll('#conc .chip').forEach(function(c){if(c.classList.contains('on'))selConc.push(+c.dataset.c)});}
+readConc();
+// prefill length chips（10-05 扩档：1K→1M 共 11 档 + 手输自定义档）
+var PF_PRESETS=[1024,2048,4096,8192,16384,32768,65536,131072,262144,524288,1048576];
+var PF_MIN=256,PF_MAX=1048576;
+function readPf(){selPf=[];document.querySelectorAll('#pfLens .chip').forEach(function(c){if(c.classList.contains('on'))selPf.push(+c.dataset.n)});}
+function sortPfChips(){ // 档位统一按长度升序（自定义档插到正确位置，表格/图表才不乱序）
+  var box=document.getElementById('pfLens');
+  [].slice.call(box.querySelectorAll('.chip')).sort(function(a,b){return (+a.dataset.n)-(+b.dataset.n)}).forEach(function(c){box.appendChild(c)});
+}
+function pfChip(n,custom){
+  var el=h('span','chip'+(selPf.indexOf(n)>=0?' on':''),fmtK(n)+(custom?'<b class="x" title="移除这个自定义档位">×</b>':''));
+  el.dataset.n=n; if(custom)el.dataset.custom='1';
+  el.onclick=function(ev){
+    if(running)return;
+    if(custom&&ev.target&&ev.target.classList&&ev.target.classList.contains('x')){el.remove();readPf();return;}
+    el.classList.toggle('on');readPf();
+  };
+  document.getElementById('pfLens').appendChild(el);
+  return el;
+}
+PF_PRESETS.forEach(function(n){pfChip(n,false)});
+readPf();
+function pfAddCustom(){
+  if(running)return;
+  var i=document.getElementById('pfCustom'),v=Math.round(+i.value||0);
+  if(!(v>=PF_MIN&&v<=PF_MAX)){alert('自定义档位需在 '+PF_MIN+' ~ '+PF_MAX+'（=1M）tokens 之间');return;}
+  var ex=document.querySelector('#pfLens .chip[data-n="'+v+'"]');
+  if(ex){ex.classList.add('on');}else{pfChip(v,true).classList.add('on');sortPfChips();}
+  i.value='';readPf();
+}
+document.getElementById('pfAdd').onclick=pfAddCustom;
+document.getElementById('pfCustom').addEventListener('keydown',function(e){if(e.key==='Enter')pfAddCustom()});
+document.getElementById('pfClear').onclick=function(){
+  if(running)return;
+  document.querySelectorAll('#pfLens .chip[data-custom]').forEach(function(c){c.remove()});readPf();
+};
+
+// tabs
+document.querySelectorAll('.tab').forEach(function(t){
+  t.onclick=function(){
+    document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('on')});
+    t.classList.add('on');
+    ['single','conc','prefill','history'].forEach(function(k){document.getElementById('tab-'+k).style.display=(k===t.dataset.t?'':'none')});
+    if(t.dataset.t==='history')loadHist();
+  };
+});
+
+// run
+document.getElementById('go').onclick=function(){
+  if(!selSvc){alert('先选服务');return;}
+  if(mode==='conc'&&!selConc.length){alert('至少选一个并发档位');return;}
+  if(mode==='prefill'&&!selPf.length){alert('至少选一个长度档位');return;}
+  var reps=mode==='prefill'?+document.getElementById('repsPf').value:+document.getElementById('reps').value;
+  if(mode==='prefill'){
+    var tooBig=selPf.filter(function(n){return n>1048576});
+    if(tooBig.length){alert('档位 '+tooBig.join(' / ')+' 超过上限 1048576（1M tokens）：先把它们取消勾选');return;}
+    // 粗略预估总耗时（按 4700 tok/s + 每轮冲缓存/静置），1M×3 轮就是十几分钟，让人有个数
+    var est=selPf.reduce(function(a,n){return a+n*reps/4700},0)+selPf.length*reps*8;
+    if(est>180&&!confirm('预计要跑约 '+(est>=60?Math.round(est/60)+' 分钟':Math.round(est)+' 秒')
+      +'（档位 '+selPf.map(fmtK).join('/')+' × '+reps+' 轮，按 prefill 4700 tok/s 粗估）。\n现在开始？'))return;
+  }
+  var body={mode:mode,port:selSvc.port,sid:selSvc.id,model:selModel,suite:document.getElementById('suite').value,
+    reps:reps,concLevels:selConc,
+    maxTokens:+document.getElementById('mt').value||700,
+    settle:+document.getElementById('settle').value||0,
+    repSettle:isNaN(+document.getElementById('repSettle').value)?3:+document.getElementById('repSettle').value,
+    roundIso:document.getElementById('roundIso').checked,
+    prefill:{enabled:mode==='prefill',lengths:selPf},
+    tag:document.getElementById('tag').value||'run'};
+  document.getElementById('finalCard').style.display='none';
+  document.getElementById('evLog').innerHTML='';document.getElementById('lastSumm').style.display='none';
+  sig={single:'',conc:'',prefill:'',summary:'',ev:'',live:'',fin:''};
+  fetch('/v1/internal/bench/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+   .then(function(r){return r.json()}).then(function(jj){if(jj.error)alert(jj.error);else poll();});
+};
+document.getElementById('stop').onclick=function(){fetch('/v1/internal/bench/stop',{method:'POST'})};
+
+// ---------- 轮询骨架（09-25 加固）----------
+// 原实现两个致命脆弱点，症状就是「跑完一整轮，图表/表格全是空白」：
+//  ① 渲染链中途抛错 → .then 提前退出，末尾的 setTimeout(poll) 永不执行，轮询从此永久停摆，
+//     页面定格在最后一次渲染的样子（进度条还是新的，因为它在抛错之前那几行已经写了 DOM）。
+//     实锤触发点：单流模式第 1 类一测完就调 renderSingle→renderStats，而 renderStats 无守卫地读
+//     cur.summary.accept——summary 是服务端整轮跑完（第 7 步）才有的字段，运行中恒为 null → TypeError。
+//  ② fetch 只有成功分支，一次网络失败（控制台重启/瞬断）同样把轮询链打断。
+// 修法是通用的：状态落地与渲染分离，每个渲染段各自兜底，轮询排程放在 try 之外必定执行。
+function safeRun(fn){var a=[].slice.call(arguments,1);try{fn.apply(null,a)}catch(e){console.error('[bench] '+(fn&&fn.name?fn.name:'render')+' 异常（已忽略，轮询继续）：',e)}}
+function poll(){
+  fetch('/v1/internal/bench/run').then(function(r){return r.json()}).then(function(s){
+    try{applyState(s)}catch(e){console.error('[bench] 状态渲染异常（已忽略，轮询继续）：',e)}
+    wasRunning=running;
+    if(running)setTimeout(poll,1000);else loadLive();
+  },function(e){
+    console.warn('[bench] /bench/run 轮询失败，3s 后重试：',e);
+    setTimeout(poll,3000); // 失败也必须续链，否则整页定格
+  });
+}
+function applyState(s){
+  var pill=document.getElementById('pill'),go=document.getElementById('go'),stop=document.getElementById('stop');
+  running=s.status==='running';
+  go.disabled=running; // 停止按钮常驻：随时可点（空闲时点了无害）
+  document.querySelectorAll('#modeChips .chip').forEach(function(c){c.classList.toggle('locked',running)});
+  pill.className='pill '+(running?'run':(s.status==='done'?'done':(s.status==='error'||s.status==='aborted'?'err':'')));
+  pill.textContent={init:'初始化',running:'运行中',done:'完成',error:'出错',aborted:'已停止'}[s.status]||'空闲';
+  document.getElementById('stageNote').textContent=(s.mode?('['+({single:'单流',conc:'并发',prefill:'预填充'}[s.mode])+'] '):'')+(s.stageNote||'')+(s.iso?(' · '+s.iso):'');
+  var _en=document.getElementById('envNote');if(_en)_en.textContent=s.env?('　'+envBrief(s.env)):''; // 09-29 配置快照摘要
+  if(s.env&&s.env.engineParams&&s.env.engineParams.max_model_len){ // 预填充卡的上下文提示（跟着最近一次快照走，不多打接口）
+    var _cx=document.getElementById('pfCtxNote');
+    if(_cx)_cx.textContent='（引擎 max_model_len '+fmtK(s.env.engineParams.max_model_len)+'，更高的档会自动跳过）';
+  }
+  var pct=0,tx='';
+  if(s.progress&&s.progress.total){
+    var p=s.progress;pct=Math.round(100*(p.cur-1+(p.rep/Math.max(p.reps,1)))/p.total);
+    tx=p.phase+' '+p.cur+'/'+p.total+' · 第 '+p.rep+'/'+p.reps+' 轮';
+  }else if(s.stage==='settle'){tx='静置预热中…';}
+  document.getElementById('pbar').style.width=pct+'%';
+  document.getElementById('progTx').textContent=tx+(s.error?(' ⚠ '+s.error):'');
+  if(s.summary)cur.summary=s.summary; // 先落数据再渲染（原顺序 renderStats 会读到 null）
+  safeRun(renderLive,s);
+  safeRun(renderEvents,s);
+  if(s.single&&Object.keys(s.single).length){var g1=j(s.single,s.order);if(g1!==sig.single){sig.single=g1;cur.single=s.single;cur.order=s.order||Object.keys(s.single);safeRun(renderSingle);}}
+  if(s.conc&&Object.keys(s.conc).length){var g2=j(s.conc);if(g2!==sig.conc){sig.conc=g2;cur.conc=s.conc;safeRun(renderConc);}}
+  if(s.prefill&&Object.keys(s.prefill).length){var g3=j(s.prefill);if(g3!==sig.prefill){sig.prefill=g3;cur.prefill=s.prefill;safeRun(renderPf);}}
+  if(s.summary){var g4=j(s.summary);if(g4!==sig.summary){sig.summary=g4;safeRun(renderStats);}}
+  if(s.final){var g5=j(s.final);if(g5!==sig.fin){sig.fin=g5;safeRun(renderFinal,s.final,wasRunning);}}
+}
+// ---------- 实时监控 ----------
+function renderLive(s){
+  var card=document.getElementById('liveCard');
+  var L=s.live;
+  if(!L||!L.t||!L.t.length){card.style.display='none';return;}
+  card.style.display='block'; // 必须显式 block：CSS 里 #liveCard{display:none}，置空等于沿用该规则，卡片永远出不来
+  var n=L.t.length,last=n-1;
+  document.getElementById('liveHead').textContent='每 1s 采样 /metrics · 已录 '+n+' 点（保留最近 300）';
+  var stats=[[L.tg[last]!=null?L.tg[last]:'—','decode tok/s'],
+             [L.pg[last]!=null?L.pg[last]:'—','prefill tok/s'],
+             [L.run[last]||0,'运行中请求'],
+             [L.wait[last]||0,'排队请求'],
+             [(L.kv[last]||0)+'%','KV 缓存占用'],
+             [s.cur?Math.round((Date.now()-s.cur.t0)/1000)+'s':'—','本轮已用']];
+  var w=document.getElementById('liveStats');w.innerHTML='';
+  stats.forEach(function(it){var d=h('div','stat');d.innerHTML='<div class="v">'+(it[0]!=null?it[0]:'—')+'</div><div class="l">'+it[1]+'</div>';w.appendChild(d);});
+  var cl=document.getElementById('curLine');
+  if(s.cur){
+    var el=((Date.now()-s.cur.t0)/1000);
+    var tps=el>0.3?Math.round(s.cur.tokens/el*10)/10:0;
+    var nm=s.cur.phase==='单流'?s.cur.name:(s.cur.phase==='并发'?('c='+s.cur.c+(s.cur.done!=null?'（完成 '+s.cur.done+'/'+s.cur.total+'）':'')):('~'+fmtK(s.cur.len)+' tok prefill'));
+    cl.textContent='当前：'+nm+' · 第 '+s.cur.rep+'/'+s.cur.reps+' 轮 · 已生成 '+(s.cur.phase==='预填充'?(s.cur.tokens||'预填充中…'):s.cur.tokens)+' tokens'+(s.cur.phase!=='预填充'?' · '+tps+' tok/s':'');
+  } else cl.textContent='';
+  var g=j(L.t,L.tg,L.pg);
+  if(g!==sig.live){
+    sig.live=g;
+    liveT=L.t;
+    if(window.Chart){
+      var dd={labels:L.t,datasets:[
+        {label:'decode tok/s',data:L.tg,borderColor:'#6366f1',backgroundColor:'rgba(99,102,241,.10)',fill:true,tension:.25,pointRadius:0,borderWidth:1.6},
+        {label:'prefill tok/s',data:L.pg,borderColor:'#8b5cf6',backgroundColor:'rgba(139,92,246,.06)',fill:false,tension:.25,pointRadius:0,borderWidth:1.4}]};
+      if(chartL){chartL.data=dd;chartL.update('none');}
+      else{chartL=new Chart(document.getElementById('chLive'),{type:'line',data:dd,
+        options:Object.assign({},CHOPT,{plugins:{legend:{display:true,labels:{color:'#64748b',boxWidth:10,font:{size:10}}}},
+          scales:{y:{grid:{color:'#e2e8f0'},ticks:{color:'#64748b',font:{size:10}}},x:{grid:{display:false},ticks:{color:'#334155',font:{size:10},maxTicksLimit:10,callback:function(v,i){return (liveT[i]!=null?liveT[i]:v)+'s'}}}}})});
+      }
+    }
+  }
+}
+// ---------- 分段总结事件流 ----------
+function renderEvents(s){
+  if(!s.events||!s.events.length)return;
+  var g=j(s.events);
+  if(g===sig.ev)return;
+  sig.ev=g;
+  var w=document.getElementById('evLog');w.innerHTML='';
+  for(var i=s.events.length-1;i>=0;i--){
+    var e=s.events[i];
+    var d=h('div','ev '+e.kind);
+    d.innerHTML='<span class="tm">'+e.ts+'</span><span class="tt">'+e.title+'</span><span class="tx">'+(e.text||'')+'</span>';
+    w.appendChild(d);
+  }
+  var lastEv=null;
+  for(var i2=s.events.length-1;i2>=0;i2--){if(s.events[i2].kind!=='final'){lastEv=s.events[i2];break;}}
+  if(lastEv){
+    var ls=document.getElementById('lastSumm');
+    ls.style.display='block'; // 同上：#lastSumm 由 CSS 隐藏，置空不会显示
+    ls.innerHTML='最新一段： <b>'+lastEv.title.replace('✔ ','')+'</b> → '+lastEv.text;
+  }
+}
+// ---------- 最终汇总 ----------
+function renderFinal(f,doScroll){
+  var card=document.getElementById('finalCard');
+  var b=document.getElementById('finalBody');
+  card.style.display='block'; // 同上：#finalCard 由 CSS 隐藏，置空不会显示（原「最终汇总」永不出场）
+  var html='';
+  function tiles(arr){
+    var s='<div class="mgrid">';
+    arr.forEach(function(it){s+='<div class="stat"><div class="v">'+(it[0]!=null?it[0]:'—')+'</div><div class="l">'+it[1]+'</div></div>';});
+    return s+'</div>';
+  }
+  if(f.mode==='single'){
+    html+=tiles([[f.avg,'综合均值 tok/s'],[f.median,'中位 tok/s'],
+      [f.best?f.best.tps:'—','最快「'+(f.best?f.best.name:'')+'」'],
+      [f.worst?f.worst.tps:'—','最慢「'+(f.worst?f.worst.name:'')+'」'],
+      [f.spreadPct!=null?f.spreadPct+'%':'—','最快/最慢极差（相对均值）'],
+      [f.meanTtft?f.meanTtft+'ms':'—','平均 TTFT'],
+      [f.meanAccept!=null?f.meanAccept+'%':'—','平均接受率'],
+      [f.count,'类型数']]);
+    var maxTps=f.best?f.best.tps:1;
+    html+='<div style="overflow:auto;max-height:380px"><table class="fin-tbl"><tr><th>#</th><th>类型</th><th>tok/s</th><th>相对均值</th><th style="width:35%">对比</th><th>TTFT ms</th><th>接受率</th></tr>';
+    f.rows.forEach(function(r,i){
+      var d=f.avg?(r.tps-f.avg)/f.avg:null;
+      html+='<tr><td class="rank">'+(i+1)+'</td><td>'+r.name+'</td><td class="num"><b>'+r.tps+'</b></td><td class="num">'+fmtPct(d)+'</td><td><span class="bar-in" style="width:'+Math.round(100*r.tps/maxTps*0.9)+'%"></span></td><td class="num">'+(r.ttft||'—')+'</td><td class="num">'+(r.accept!=null?r.accept+'%':'—')+'</td></tr>';
+    });
+    html+='</table></div>';
+    html+='<div class="small" style="margin-top:8px">最快「'+f.best.name+'」比最慢「'+f.worst.name+'」高 '+((f.best.tps/f.worst.tps-1)*100).toFixed(1)+'%（decode tok/s，'+f.count+' 类各自 '+((f.rows[0]&&f.rows[0].reps)?f.rows[0].reps.length:'N')+' 轮均值）。</div>';
+  } else if(f.mode==='conc'){
+    html+=tiles([[f.peak?f.peak.agg:'—','峰值聚合 tok/s（c='+(f.peak?f.peak.c:'')+'）'],
+      [f.baseAgg!=null?f.baseAgg:'—','基准 tok/s（c='+f.baseC+'）'],
+      [f.scale?('×'+f.scale):'—','峰值/基准扩展比'],
+      [f.meanAccept!=null?f.meanAccept+'%':'—','平均接受率']]);
+    html+='<div style="overflow:auto"><table class="fin-tbl"><tr><th>并发</th><th>聚合 tok/s</th><th>相对 c1</th><th>接受率</th><th>平均墙钟 s</th></tr>';
+    f.rows.forEach(function(r){
+      var d=(f.baseAgg&&r.c!==f.baseC)?(r.agg-f.baseAgg)/f.baseAgg:null;
+      html+='<tr><td>c='+r.c+'</td><td class="num"><b>'+r.agg+'</b></td><td class="num">'+(d==null?'基准':fmtPct(d))+'</td><td class="num">'+(r.accept!=null?r.accept+'%':'—')+'</td><td class="num">'+r.wall+'</td></tr>';
+    });
+    html+='</table></div>';
+  } else if(f.mode==='prefill'){
+    html+=tiles([[f.best?f.best.ptps:'—','峰值 tok/s（~'+(f.best?fmtK(f.best.len):'')+'）'],[f.rows.length,'长度档数'],
+      [f.best?fmtTtft(f.best.ttft):'—','峰值档 TTFT']]);
+    html+='<div style="overflow:auto"><table class="fin-tbl"><tr><th>长度</th><th>实际 prompt tok</th><th>TTFT</th><th>prefill tok/s</th></tr>';
+    f.rows.forEach(function(r){
+      html+='<tr><td>'+fmtK(r.len)+'</td><td class="num">'+(r.tokens||'—')+'</td><td class="num">'+(r.ttft?fmtTtft(r.ttft):'—')+'</td><td class="num"><b>'+(r.ptps||'—')+'</b></td></tr>';
+    });
+    html+='</table></div>';
+    if(f.failed&&f.failed.length)html+='<div class="small pfErr" style="margin-top:6px">✖ 失败的档位：'+f.failed.map(function(n){return '~'+fmtK(n)}).join(' / ')+'（原因见上方事件流；常见为该档超出引擎 max_model_len 或 KV 池放不下）</div>';
+  }
+  b.innerHTML=html;
+  if(doScroll)card.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function renderStats(){
+  var w=document.getElementById('sgStats');w.innerHTML='';
+  var SM=cur.summary||{}; // 运行中 summary 字段服务端还没产出，不能当对象直读（09-25 停摆根因）
+  var singleMean=null;
+  if(cur.single&&cur.order){var arr=cur.order.map(function(id){return (cur.single[id]||{}).meanTps}).filter(Boolean);singleMean=arr.length?(arr.reduce(function(a,b){return a+b},0)/arr.length):null;}
+  var pfBest=null;
+  if(cur.prefill){var ks=Object.keys(cur.prefill);if(ks.length){var v=ks.map(function(k){return cur.prefill[k].meanPtps||0});pfBest=Math.max.apply(null,v);}}
+  [[singleMean?singleMean.toFixed(1):'—','单流均值 tok/s'],
+   [SM.accept!=null?SM.accept+'%':'—','投机接受率'],
+   [SM.prefixHit!=null?SM.prefixHit+'%':'—','前缀缓存命中'],
+   [pfBest?pfBest+' tok/s':'—','prefill 峰值档']
+  ].forEach(function(it){
+    var d=h('div','stat');d.innerHTML='<div class="v">'+(it[0]||'—')+'</div><div class="l">'+it[1]+'</div>';w.appendChild(d);
+  });
+}
+function renderSingle(){
+  renderStats();
+  var t=document.getElementById('tbSingle');
+  var html='<tr><th>类型</th><th>tok/s</th><th>TTFT ms</th><th>接受率</th><th>各轮</th></tr>';
+  cur.order.forEach(function(id){
+    var r=cur.single[id];if(!r)return;
+    var done=!r.running&&r.meanTps!=null;
+    html+='<tr><td>'+r.name+(r.running?' <span class="small" style="color:var(--warn)">测试中…</span>':'')+'</td><td class="num"><b>'+(done?r.meanTps:'…')+'</b></td><td class="num">'+(done&&r.meanTtft?r.meanTtft:'—')+'</td><td class="num">'+(done&&r.accept!=null?r.accept+'%':'—')+'</td><td class="num small">'+r.reps.map(function(x){return x.tps}).join(' / ')+'</td></tr>';
+  });
+  t.innerHTML=html;
+  if(window.Chart){
+    var labels=cur.order.map(function(id){return (cur.single[id]||{}).name||id});
+    var data=cur.order.map(function(id){return (cur.single[id]||{}).meanTps||0});
+    var dd={labels:labels,datasets:[{label:'tok/s',data:data,backgroundColor:'rgba(99,102,241,.75)',borderRadius:5}]};
+    if(chartS){chartS.data=dd;chartS.update('none');}
+    else{chartS=new Chart(document.getElementById('chSingle'),{type:'bar',data:dd,
+      options:Object.assign({},CHOPT,{indexAxis:'y',scales:{x:{grid:{color:'#e2e8f0'},ticks:{color:'#64748b'}},y:{grid:{display:false},ticks:{color:'#334155',font:{size:11}}}}})});
+    }
+    var tdata=cur.order.map(function(id){return (cur.single[id]||{}).meanTtft||0});
+    var ddT={labels:labels,datasets:[{label:'TTFT ms',data:tdata,backgroundColor:'rgba(245,158,11,.7)',borderRadius:5}]};
+    if(chartST){chartST.data=ddT;chartST.update('none');}
+    else{chartST=new Chart(document.getElementById('chSingleTtft'),{type:'bar',data:ddT,
+      options:Object.assign({},CHOPT,{indexAxis:'y',scales:{x:{grid:{color:'#e2e8f0'},ticks:{color:'#64748b'}},y:{grid:{display:false},ticks:{color:'#334155',font:{size:11}}}}})});
+    }
+  }
+}
+function renderConc(){
+  var t=document.getElementById('tbConc');
+  var cs=Object.keys(cur.conc).sort(function(a,b){return a-b});
+  var html='<tr><th>c</th><th>聚合 tok/s</th><th>接受率</th><th>各轮</th></tr>';
+  cs.forEach(function(c){
+    var r=cur.conc[c];
+    var done=!r.running&&r.meanAgg!=null;
+    html+='<tr><td>c='+c+(r.running?' <span class="small" style="color:var(--warn)">测试中…</span>':'')+'</td><td class="num"><b>'+(done?r.meanAgg:'…')+'</b></td><td class="num">'+(done&&r.meanAccept!=null?r.meanAccept+'%':'—')+'</td><td class="num small">'+r.reps.map(function(x){return x.aggTps}).join(' / ')+'</td></tr>';
+  });
+  t.innerHTML=html;
+  if(window.Chart){
+    if(chartC)chartC.destroy();
+    chartC=new Chart(document.getElementById('chConc'),{type:'line',
+      data:{labels:cs.map(function(c){return 'c='+c}),datasets:[{label:'聚合 tok/s',data:cs.map(function(c){return cur.conc[c].meanAgg||0}),borderColor:'#6366f1',backgroundColor:'rgba(99,102,241,.12)',fill:true,tension:.3,pointRadius:5}]},
+      options:Object.assign({},CHOPT,{scales:{y:{grid:{color:'#e2e8f0'},ticks:{color:'#64748b'}},x:{grid:{display:false},ticks:{color:'#334155'}}}})});
+  }
+}
+function renderPf(){
+  var t=document.getElementById('tbPf');
+  var ks=Object.keys(cur.prefill).sort(function(a,b){return a-b});
+  var html='<tr><th>上下文长度</th><th>实际 prompt tok</th><th>TTFT</th><th>prefill tok/s</th><th>各轮 tok/s</th></tr>';
+  ks.forEach(function(k){
+    var r=cur.prefill[k];
+    var done=!r.running&&r.meanPtps!=null;
+    if(r.error){ // 失败档：整行点名原因（超上下文/显存不足等），不让它在表里凭空消失
+      html+='<tr><td>'+fmtK(+k)+' tokens</td><td class="num">—</td><td colspan="3" style="text-align:left" class="pfErr small">✖ '+esc(r.error)+'</td></tr>';
+      return;
+    }
+    html+='<tr><td>'+fmtK(+k)+' tokens'+(r.running?' <span class="small" style="color:var(--warn)">测试中…</span>':'')+'</td><td class="num">'+(r.meanPromptTokens||'—')+'</td><td class="num">'+(done?fmtTtft(r.meanTtft):'—')+'</td><td class="num"><b>'+(done?r.meanPtps:'…')+'</b></td><td class="num small">'+r.reps.map(function(x){return x.ptps||'—'}).join(' / ')+'</td></tr>';
+  });
+  t.innerHTML=html;
+  if(window.Chart){
+    if(chartP)chartP.destroy();
+    chartP=new Chart(document.getElementById('chPf'),{type:'line',
+      data:{labels:ks.map(function(k){return fmtK(+k)}),datasets:[{label:'prefill tok/s',data:ks.map(function(k){return cur.prefill[k].meanPtps||0}),borderColor:'#8b5cf6',backgroundColor:'rgba(139,92,246,.1)',fill:true,tension:.3,pointRadius:5}]},
+      options:Object.assign({},CHOPT,{scales:{y:{grid:{color:'#e2e8f0'},ticks:{color:'#64748b'}},x:{grid:{display:false},ticks:{color:'#334155'},title:{display:true,text:'上下文长度 (tokens)',color:'#64748b'}}}})});
+  }
+}
+// history
+function loadHist(){
+  fetch('/v1/internal/bench/history').then(r=>r.json()).then(function(list){
+    var t=document.getElementById('tbHist');
+    var MN={single:'单流',conc:'并发',prefill:'预填充',full:'旧全流程'};
+    var html='<tr><th>时间</th><th>标签</th><th>模式</th><th>服务</th><th>类型</th><th>轮</th><th>decode均值</th><th>TTFT ms</th><th>接受率</th><th>并发峰值</th><th>pf峰值</th><th></th></tr>';
+    list.forEach(function(x,i){
+      var peakTx=x.concPeak?('<b>'+x.concPeak.agg+'</b> c='+x.concPeak.c):'—';
+      html+='<tr data-i="'+i+'"><td>'+fmtLocal(x.timestamp)+'</td><td>'+x.tag+(x.hasEnv?' <span title="该记录带配置快照" style="color:var(--ac)">⚙</span>':'')+'</td><td class="small">'+(MN[x.mode]||x.mode||'—')+'</td><td class="small">'+(x.service||'—')+'</td><td class="num">'+(x.types||'—')+'</td><td class="num">'+(x.reps||'—')+'</td><td class="num"><b>'+(x.singleMean||'—')+'</b></td><td class="num">'+(x.singleTtft||'—')+'</td><td class="num">'+(x.singleAccept!=null?x.singleAccept+'%':'—')+'</td><td class="num small">'+peakTx+'</td><td class="num small">'+(x.pfPeak||'—')+'</td><td><button class="dbtn" data-file="'+x.file+'">详情</button></td></tr>';
+    });
+    t.innerHTML=html;
+    t.querySelectorAll('tr[data-i]').forEach(function(tr){
+      tr.onclick=function(){
+        var i=+tr.dataset.i;
+        if(histSel.indexOf(i)>=0){histSel=histSel.filter(function(x){return x!==i});tr.style.background='';}
+        else{histSel.push(i);tr.style.background='rgba(99,102,241,.14)';}
+        if(histSel.length===2)doCompare(list);
+        if(histSel.length>2){histSel=[i];t.querySelectorAll('tr[data-i]').forEach(function(x){x.style.background=''});tr.style.background='rgba(99,102,241,.14)';}
+      };
+    });
+    t.querySelectorAll('.dbtn').forEach(function(b){
+      b.onclick=function(e){e.stopPropagation();openDetail(b.dataset.file);};
+    });
+  });
+}
+function cmpAvg(run,ids,key){var v=ids.map(function(id){return ((run.single||{})[id]||{})[key]}).filter(function(x){return x!=null&&x});return v.length?v.reduce(function(a,b){return a+b},0)/v.length:null}
+function cmpTile(label,va,vb,fmt){
+  var d=(va&&vb)?(vb-va)/va:null;
+  return '<div class="stat"><div class="v" style="font-size:16px">'+(va!=null?fmt(va):'—')+' → <b style="color:var(--tx)">'+(vb!=null?fmt(vb):'—')+'</b></div><div class="l">'+label+'（Δ '+fmtPct(d)+'）</div></div>';
+}
+function doCompare(list){
+  var a=list[histSel[0]],b=list[histSel[1]];
+  Promise.all([
+    fetch('/v1/internal/bench/history/read?f='+a.file).then(r=>r.json()),
+    fetch('/v1/internal/bench/history/read?f='+b.file).then(r=>r.json())
+  ]).then(function(rs){
+    var A=rs[0],B=rs[1];
+    if(A.error||B.error){alert('读取失败');return}
+    document.getElementById('cmpWrap').style.display='';
+    document.getElementById('cmpTitle').innerHTML='A/B 对比：<span style="color:var(--ac)">'+A.tag+' '+fmtLocal(A.timestamp)+'</span> vs <span style="color:var(--warn)">'+B.tag+' '+fmtLocal(B.timestamp)+'</span><span class="small">（B 相对 A）</span>';
+    var html='',tiles=[];
+    var order=B.order||A.order||[];
+    var common=order.filter(function(id){return (A.single||{})[id]&&(B.single||{})[id]});
+    // 单流对比：tiles + 分组条形图 + 表
+    var hasS=common.length>0;
+    document.getElementById('cmpSecS').style.display=hasS?'':'none';
+    if(hasS){
+      var mA=cmpAvg(A,common,'meanTps'),mB=cmpAvg(B,common,'meanTps');
+      var tA=cmpAvg(A,common,'meanTtft'),tB=cmpAvg(B,common,'meanTtft');
+      var aA=cmpAvg(A,common,'accept'),aB=cmpAvg(B,common,'accept');
+      tiles.push(cmpTile('decode 均值 tok/s（'+common.length+'类）',mA,mB,function(v){return v.toFixed(1)}));
+      tiles.push(cmpTile('平均 TTFT ms',tA,tB,function(v){return Math.round(v)+''}));
+      if(aA!=null||aB!=null)tiles.push(cmpTile('平均接受率',aA,aB,function(v){return v.toFixed(1)+'%'}));
+      var pairs=common.map(function(id){var x=A.single[id],y=B.single[id];return{name:x.name,a:x.meanTps||0,b:y.meanTps||0,ta:x.meanTtft,tb:y.meanTtft}}).sort(function(p,q){return q.a-p.a});
+      html+='<tr><th>类型</th><th>A tok/s</th><th>B tok/s</th><th>Δ</th><th>A TTFT</th><th>B TTFT</th></tr>';
+      pairs.forEach(function(p){
+        html+='<tr><td>'+p.name+'</td><td class="num">'+p.a+'</td><td class="num">'+p.b+'</td><td class="num">'+fmtPct(p.a?(p.b-p.a)/p.a:null)+'</td><td class="num">'+(p.ta||'—')+'</td><td class="num">'+(p.tb||'—')+'</td></tr>';
+      });
+      if(window.Chart){
+        if(chartCS)chartCS.destroy();
+        chartCS=new Chart(document.getElementById('chCmpS'),{type:'bar',
+          data:{labels:pairs.map(function(p){return p.name}),datasets:[
+            {label:'A',data:pairs.map(function(p){return p.a}),backgroundColor:'rgba(99,102,241,.75)',borderRadius:4},
+            {label:'B',data:pairs.map(function(p){return p.b}),backgroundColor:'rgba(245,158,11,.75)',borderRadius:4}]},
+          options:Object.assign({},CHOPT,{indexAxis:'y',plugins:{legend:{display:true,labels:{color:'#64748b',boxWidth:10,font:{size:11}}}},
+            scales:{x:{grid:{color:'#e2e8f0'},ticks:{color:'#64748b'}},y:{grid:{display:false},ticks:{color:'#334155',font:{size:11}}}}})});
+      }
+    }
+    // 并发对比：折线 + 表
+    var cs=Object.keys(B.conc||{}).filter(function(c){return (A.conc||{})[c]}).map(Number).sort(function(x,y){return x-y});
+    document.getElementById('cmpSecC').style.display=cs.length?'':'none';
+    if(cs.length){
+      var pkA=0,pkA_c=0,pkB=0,pkB_c=0;
+      Object.keys(A.conc).forEach(function(c){if(A.conc[c].meanAgg>pkA){pkA=A.conc[c].meanAgg;pkA_c=c}});
+      Object.keys(B.conc).forEach(function(c){if(B.conc[c].meanAgg>pkB){pkB=B.conc[c].meanAgg;pkB_c=c}});
+      tiles.push(cmpTile('并发峰值聚合 tok/s',pkA,pkB,function(v){return v.toFixed(1)}));
+      html+='<tr><th colspan="6" style="text-align:left;padding-top:12px">并发</th></tr><tr><th>c</th><th>A</th><th>B</th><th>Δ</th><th>A 接受率</th><th>B 接受率</th></tr>';
+      cs.forEach(function(c){
+        var x=A.conc[c],y=B.conc[c];
+        html+='<tr><td>c='+c+'</td><td class="num">'+x.meanAgg+'</td><td class="num">'+y.meanAgg+'</td><td class="num">'+fmtPct(x.meanAgg?(y.meanAgg-x.meanAgg)/x.meanAgg:null)+'</td><td class="num">'+(x.meanAccept!=null?x.meanAccept+'%':'—')+'</td><td class="num">'+(y.meanAccept!=null?y.meanAccept+'%':'—')+'</td></tr>';
+      });
+      if(window.Chart){
+        if(chartCC)chartCC.destroy();
+        chartCC=new Chart(document.getElementById('chCmpC'),{type:'line',
+          data:{labels:cs.map(function(c){return 'c='+c}),datasets:[
+            {label:'A',data:cs.map(function(c){return A.conc[c].meanAgg||0}),borderColor:'#6366f1',backgroundColor:'rgba(99,102,241,.10)',fill:true,tension:.3,pointRadius:5},
+            {label:'B',data:cs.map(function(c){return B.conc[c].meanAgg||0}),borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.08)',fill:false,tension:.3,pointRadius:5}]},
+          options:Object.assign({},CHOPT,{plugins:{legend:{display:true,labels:{color:'#64748b',boxWidth:10,font:{size:11}}}},
+            scales:{y:{grid:{color:'#e2e8f0'},ticks:{color:'#64748b'}},x:{grid:{display:false},ticks:{color:'#334155'}}}})});
+      }
+    }
+    // 预填充对比：折线 + 表
+    var pks=Object.keys(B.prefill||{}).filter(function(k){return (A.prefill||{})[k]}).map(Number).sort(function(x,y){return x-y});
+    document.getElementById('cmpSecP').style.display=pks.length?'':'none';
+    if(pks.length){
+      html+='<tr><th colspan="4" style="text-align:left;padding-top:12px">预填充</th></tr><tr><th>长度</th><th>A tok/s</th><th>B tok/s</th><th>Δ</th></tr>';
+      pks.forEach(function(k){
+        var x=A.prefill[k],y=B.prefill[k];
+        html+='<tr><td>'+fmtK(k)+'</td><td class="num">'+x.meanPtps+'</td><td class="num">'+y.meanPtps+'</td><td class="num">'+fmtPct(x.meanPtps?(y.meanPtps-x.meanPtps)/x.meanPtps:null)+'</td></tr>';
+      });
+      if(window.Chart){
+        if(chartCP)chartCP.destroy();
+        chartCP=new Chart(document.getElementById('chCmpP'),{type:'line',
+          data:{labels:pks.map(function(k){return fmtK(k)}),datasets:[
+            {label:'A',data:pks.map(function(k){return A.prefill[k].meanPtps||0}),borderColor:'#6366f1',backgroundColor:'rgba(99,102,241,.10)',fill:true,tension:.3,pointRadius:5},
+            {label:'B',data:pks.map(function(k){return B.prefill[k].meanPtps||0}),borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.08)',fill:false,tension:.3,pointRadius:5}]},
+          options:Object.assign({},CHOPT,{plugins:{legend:{display:true,labels:{color:'#64748b',boxWidth:10,font:{size:11}}}},
+            scales:{y:{grid:{color:'#e2e8f0'},ticks:{color:'#64748b'}},x:{grid:{display:false},ticks:{color:'#334155'}}}})});
+      }
+    }
+    document.getElementById('cmpStats').innerHTML=tiles.length?tiles.join(''):'<div class="small" style="color:var(--tx2)">两次记录无共同可对比指标</div>';
+    if(!html)html='<tr><td>两次记录没有可对比的共同部分（模式或参数不同）</td></tr>';
+    document.getElementById('tbCmp').innerHTML=html;
+    // 09-29 配置差异：展平两份配置快照逐键比对，红底=不一致
+    var secE=document.getElementById('cmpSecE');
+    if(A.env||B.env){
+      secE.style.display='';
+      var fa=envFlat(A),fb=envFlat(B),keys={},ediff=[],esame=0;
+      Object.keys(fa).forEach(function(k){keys[k]=1});Object.keys(fb).forEach(function(k){keys[k]=1});
+      Object.keys(keys).sort().forEach(function(k){
+        var va=fa[k],vb=fb[k];
+        if(String(va)===String(vb)){esame++;return;}
+        ediff.push([k,va,vb]);
+      });
+      var eh='<tr><th>项</th><th>A</th><th>B</th></tr>';
+      ediff.forEach(function(r){
+        eh+='<tr class="envdiff"><td class="small">'+esc(r[0])+'</td><td class="small" style="text-align:left;font-family:var(--mono)">'+(r[1]==null||r[1]===''?'—':esc(String(r[1]).slice(0,400)))+'</td><td class="small" style="text-align:left;font-family:var(--mono)">'+(r[2]==null||r[2]===''?'—':esc(String(r[2]).slice(0,400)))+'</td></tr>';
+      });
+      if(!ediff.length)eh+='<tr><td colspan="3">✅ 配置一致（比对 '+esame+' 项）</td></tr>';
+      else eh+='<tr><td colspan="3" class="small">共差异 '+ediff.length+' 项 · 一致 '+esame+' 项'+((A.env&&B.env)?'':('（'+(A.env?'B':'A')+'无快照，按缺失计）'))+'</td></tr>';
+      document.getElementById('tbCmpEnv').innerHTML=eh;
+    }else secE.style.display='none';
+    document.getElementById('cmpWrap').scrollIntoView({behavior:'smooth',block:'nearest'});
+  });
+}
+// ---------- 历史详情 ----------
+// ---------- 配置快照（09-29）：每次测试开始时服务端抓取的 vLLM/模型配置展示 ----------
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function kvTbl(pairs){
+  if(!pairs.length)return '<span class="small">无数据</span>';
+  var s='<div style="overflow:auto;max-height:300px;border:1px solid var(--bd);border-radius:9px"><table><tr><th style="width:26%">项</th><th>值</th></tr>';
+  pairs.forEach(function(kv){s+='<tr><td class="small">'+esc(kv[0])+'</td><td class="small" style="text-align:left;font-family:var(--mono)">'+esc(kv[1])+'</td></tr>'});
+  return s+'</table></div>';
+}
+function envBrief(e){
+  if(!e)return '';
+  if(e.error)return '⚙️ 快照采集失败';
+  var p=e.engineParams||{},b=[];
+  if(e.vllmVersion)b.push('vLLM '+e.vllmVersion);
+  if(p.runtime)b.push(p.runtime);
+  if(p.tensor_parallel_size)b.push('TP'+p.tensor_parallel_size);
+  if(p.pipeline_parallel_size>1)b.push('PP'+p.pipeline_parallel_size);
+  if(p.max_model_len)b.push('ctx '+p.max_model_len);
+  if(p.block_size)b.push('block '+p.block_size);
+  if(p.max_num_seqs)b.push('seqs '+p.max_num_seqs);
+  if(p.speculative_config&&p.speculative_config.num_speculative_tokens!=null)b.push('MTP×'+p.speculative_config.num_speculative_tokens);
+  if(e.gpu&&e.gpu.cards&&e.gpu.cards[0]&&e.gpu.cards[0].powerLimitW)b.push(e.gpu.cards[0].powerLimitW+'W');
+  return '⚙️ '+(b.join(' · ')||'已采集');
+}
+function envSectionHtml(e){
+  if(!e)return '<div class="dSec"><h4>⚙️ 配置快照</h4><div class="small">该记录早于快照功能上线（2026-09-29），无配置数据。</div></div>';
+  if(e.error)return '<div class="dSec"><h4>⚙️ 配置快照</h4><div class="small">采集失败：'+esc(e.error)+'</div></div>';
+  var p=e.engineParams||{};
+  var html='<div class="dSec"><h4>⚙️ 配置快照 <span class="small" style="font-weight:400">测试开始时采集'+(e.capturedAt?(' · '+fmtLocal(e.capturedAt,true)):'')+'</span></h4>';
+  html+=dTiles([[e.vllmVersion||'—','vLLM 版本'],[p.runtime||(e.engine&&e.engine.runtime)||'—','runtime'],
+    [(p.tensor_parallel_size||'—')+(p.pipeline_parallel_size>1?(' / PP'+p.pipeline_parallel_size):''),'并行'],
+    [p.max_model_len||'—','max_model_len'],[p.block_size||'—','block size'],[p.max_num_seqs||'—','max_num_seqs'],
+    [p.speculative_config?('MTP×'+(p.speculative_config.num_speculative_tokens!=null?p.speculative_config.num_speculative_tokens:'?')):'无','投机解码'],
+    [p.gpu_memory_utilization!=null?p.gpu_memory_utilization:'—','显存利用率']]);
+  var EPK=['runtime','port','tensor_parallel_size','pipeline_parallel_size','max_model_len','gpu_memory_utilization','max_num_seqs','block_size','attention_backend','enable_chunked_prefill','enable_prefix_caching','kv_cache_quant','temperature','top_p','top_k','min_p','repetition_penalty','thinking','thinkingEffort','dflashMethod','dsparkMethod'];
+  var ep=[];
+  EPK.forEach(function(k){if(p[k]!=null&&p[k]!==false)ep.push(['引擎.'+k,(typeof p[k]==='object')?JSON.stringify(p[k]):String(p[k])]);});
+  if(p.dflash)ep.push(['引擎.dflash','是'+(p.dflashMethod?('（'+p.dflashMethod+'）'):'')]);
+  if(p.dspark)ep.push(['引擎.dspark','是'+(p.dsparkMethod?('（'+p.dsparkMethod+'）'):'')]);
+  if(p.speculative_config)ep.push(['引擎.speculative_config',JSON.stringify(p.speculative_config)]);
+  if(ep.length)html+='<div class="dCap">vLLM 引擎参数（按 /proc/&lt;pid&gt;/cmdline 真实命令行解析，显示值即真值）</div>'+kvTbl(ep);
+  if(e.engine&&e.engine.argv)html+='<details><summary>引擎命令行（pid '+(e.engine.pid||'?')+'，'+esc(e.engine.runtime||'')+'）</summary><div class="env-pre">'+esc(e.engine.argv.join(' '))+'</div></details>';
+  if(e.launchEnv){var le=Object.keys(e.launchEnv).sort().map(function(k){return [k,e.launchEnv[k]]});
+    html+='<details open><summary>启动 env 文件（start wrapper 每次启动落盘 = 弹窗下发参数，'+le.length+' 项）</summary>'+kvTbl(le)+'</details>';}
+  var mc=e.modelConfig||{};
+  if(e.modelPath)html+='<div class="dCap">模型目录：<span style="font-family:var(--mono)">'+esc(e.modelPath)+'</span></div>';
+  var MK=['model_type','architectures','num_hidden_layers','hidden_size','intermediate_size','num_attention_heads','num_key_value_heads','num_experts','num_experts_per_tok','shared_expert_intermediate_size','max_position_embeddings','vocab_size','torch_dtype','tie_word_embeddings'];
+  var mp=[];
+  MK.forEach(function(k){if(mc[k]!=null)mp.push([k,Array.isArray(mc[k])?mc[k].join(', '):String(mc[k])]);});
+  if(mc.rope_scaling)mp.push(['rope_scaling',JSON.stringify(mc.rope_scaling)]);
+  if(mc.quantization_config)mp.push(['quantization_config',JSON.stringify(mc.quantization_config)]);
+  var gc=e.generationConfig||{};
+  Object.keys(gc).sort().forEach(function(k){mp.push(['Generation.'+k,(typeof gc[k]==='object')?JSON.stringify(gc[k]):String(gc[k])]);});
+  if(mp.length)html+='<div class="dCap">模型配置（config.json 关键字段 ＋ generation_config.json）</div>'+kvTbl(mp);
+  if(e.modelConfig)html+='<details><summary>完整 config.json（'+Object.keys(e.modelConfig).length+' 个顶层键）</summary><div class="env-pre">'+esc(JSON.stringify(e.modelConfig,null,1).slice(0,30000))+'</div></details>';
+  if(e.httpModels&&e.httpModels.length)html+='<div class="dCap">/v1/models：'+esc(e.httpModels.map(function(m){return m.id+(m.root?('（'+m.root+'）'):'')}).join('； '))+'</div>';
+  if(e.gpu&&e.gpu.cards&&e.gpu.cards.length)html+='<div class="dCap">GPU：'+esc(e.gpu.cards.map(function(c){return c.name+' · 功耗上限 '+(c.powerLimitW!=null?c.powerLimitW+'W':'—')+(c.vbios?(' · vbios '+c.vbios):'')}).join(' ＋ ')+(e.gpu.driver?(' · 驱动 '+e.gpu.driver):''))+'</div>';
+  html+='</div>';
+  return html;
+}
+// 配置快照展平成一层键值（测试参数/引擎/启动 env/模型/GPU），供 A/B 差异表用
+function envFlat(rec){
+  var m={},e=rec.env||{},p=rec.params||{};
+  m['测试.模式']=rec.mode||'';m['测试.模型名']=rec.model||'';
+  m['测试.测试集']=p.suite;m['测试.轮数']=p.reps;m['测试.max_tokens']=p.maxTokens;
+  m['测试.并发档']=(p.concLevels||[]).join(',');
+  m['测试.静置s']=p.settle;m['测试.轮间静置s']=p.repSettle;
+  m['测试.轮次独立']=(p.roundIso===false)?'关':'开';
+  if(!e||e.error)return m;
+  m['vLLM.版本']=e.vllmVersion||'';
+  if(e.engine){m['引擎.runtime']=e.engine.runtime||'';m['引擎.命令行']=(e.engine.argv||[]).join(' ');}
+  var ep=e.engineParams||{};
+  Object.keys(ep).forEach(function(k){var v=ep[k];if(v&&typeof v==='object')v=JSON.stringify(v);m['引擎.'+k]=(v==null)?'':String(v);});
+  var le=e.launchEnv||{};
+  Object.keys(le).sort().forEach(function(k){m['启动.'+k]=le[k];});
+  var mc=e.modelConfig||{};
+  ['model_type','architectures','num_hidden_layers','hidden_size','intermediate_size','num_attention_heads','num_key_value_heads','num_experts','max_position_embeddings','torch_dtype'].forEach(function(k){if(mc[k]!=null)m['模型.'+k]=Array.isArray(mc[k])?mc[k].join(','):String(mc[k]);});
+  if(mc.rope_scaling)m['模型.rope_scaling']=JSON.stringify(mc.rope_scaling);
+  if(mc.quantization_config)m['模型.quantization_config']=JSON.stringify(mc.quantization_config);
+  var gc=e.generationConfig||{};
+  Object.keys(gc).sort().forEach(function(k){m['生成.'+k]=(typeof gc[k]==='object')?JSON.stringify(gc[k]):String(gc[k]);});
+  if(e.gpu&&e.gpu.cards)m['GPU']=e.gpu.cards.map(function(c){return c.name+'@'+(c.powerLimitW!=null?c.powerLimitW+'W':'?')}).join(' + ');
+  return m;
+}
+function med(a){if(!a.length)return null;a=a.slice().sort(function(x,y){return x-y});return a.length%2?a[(a.length-1)/2]:(a[a.length/2-1]+a[a.length/2])/2}
+// 服务端 timestamp 存 UTC ISO（toISOString 带 Z），直接截字符串显示的是 UTC 时间（比北京早 8 小时）。
+// fmtLocal：转浏览器本地时区。full=true → YYYY-MM-DD HH:mm:ss；缺省 → MM-DD HH:mm。解析失败退回原截断。
+function fmtLocal(iso,full){var d=new Date(iso);if(isNaN(d.getTime()))return(iso||'').replace('T',' ').slice(0,full?19:16);var p=function(n){return(n<10?'0':'')+n};var s=p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());return full?d.getFullYear()+'-'+s+':'+p(d.getSeconds()):s}
+function fmtDT(iso){return fmtLocal(iso,true)}
+function dTiles(arr){var s='<div class="mgrid">';arr.forEach(function(it){s+='<div class="stat"><div class="v" style="font-size:18px">'+(it[0]!=null&&it[0]!==''?it[0]:'—')+'</div><div class="l">'+it[1]+'</div></div>'});return s+'</div>'}
+function openDetail(file){
+  fetch('/v1/internal/bench/history/read?f='+encodeURIComponent(file)).then(r=>r.json()).then(function(j){
+    if(j.error){alert('读取失败: '+j.error);return}
+    var MN={single:'单流解码',conc:'并发档位',prefill:'预填充',full:'旧版全流程'};
+    var p=j.params||{};
+    document.getElementById('detailTitle').innerHTML='<div style="font-size:16px;font-weight:700">'+(j.tag||'run')+'　<span class="small" style="font-weight:400">'+(MN[j.mode]||j.mode||'')+'</span></div><div class="small">'+fmtDT(j.timestamp)+' · '+(j.service&&j.service.name||'')+' · '+(j.model||'')+' · 每段 '+(p.reps||'—')+' 轮 · max_tokens '+(p.maxTokens||'—')+'</div>';
+    var html='';
+    var order=j.order&&j.order.length?j.order:Object.keys(j.single||{});
+    var rows=order.map(function(id){return(j.single||{})[id]}).filter(Boolean);
+    var cs=Object.keys(j.conc||{}).map(Number).sort(function(x,y){return x-y});
+    var pks=Object.keys(j.prefill||{}).map(Number).sort(function(x,y){return x-y});
+    if(rows.length){
+      var tpss=rows.map(function(r){return r.meanTps}).filter(Boolean);
+      var avg=tpss.length?tpss.reduce(function(a,b){return a+b},0)/tpss.length:null;
+      var ttfts=rows.map(function(r){return r.meanTtft}).filter(Boolean);
+      var accs=rows.map(function(r){return r.accept}).filter(function(x){return x!=null});
+      var srt=rows.slice().sort(function(a,b){return(b.meanTps||0)-(a.meanTps||0)});
+      html+='<div class="dSec"><h4>单流解码 · '+rows.length+' 类 × '+(p.reps||'?')+' 轮</h4>';
+      html+=dTiles([[avg?avg.toFixed(1):'—','综合均值 tok/s'],[med(tpss)!=null?med(tpss).toFixed(1):'—','中位 tok/s'],
+        [ttfts.length?Math.round(ttfts.reduce(function(a,b){return a+b},0)/ttfts.length):'—','平均 TTFT ms'],
+        [accs.length?(accs.reduce(function(a,b){return a+b},0)/accs.length).toFixed(1)+'%':'—','平均接受率'],
+        [tpss.length?(Math.max.apply(null,tpss)-Math.min.apply(null,tpss)).toFixed(1):'—','最快-最慢极差 tok/s'],
+        [(j.summary&&j.summary.prefixHit!=null)?j.summary.prefixHit+'%':'—','前缀缓存命中'],
+        [(j.summary&&j.summary.accept!=null)?j.summary.accept+'%':'—','全程投机接受率'],
+        [p.maxTokens||'—','max_tokens']]);
+      html+='<div class="dCap">decode tok/s（按快慢排序）</div><div class="chartbox" style="height:'+Math.max(160,rows.length*26+40)+'px"><canvas id="chD1"></canvas></div>';
+      html+='<div class="dCap">TTFT ms（同一顺序）</div><div class="chartbox" style="height:'+Math.max(150,rows.length*26+40)+'px"><canvas id="chD2"></canvas></div>';
+      var maxT=Math.max.apply(null,tpss)||1;
+      html+='<div style="overflow:auto;max-height:400px"><table class="fin-tbl"><tr><th>#</th><th>类型</th><th>均值 tok/s</th><th>中位</th><th>最快轮</th><th>最慢轮</th><th>相对均值</th><th style="width:20%">对比</th><th>TTFT ms</th><th>接受率</th><th>各轮 tok/s</th></tr>';
+      srt.forEach(function(r,i){
+        var rt=r.reps.map(function(x){return x.tps});
+        var d=avg&&r.meanTps?(r.meanTps-avg)/avg:null;
+        html+='<tr><td class="rank">'+(i+1)+'</td><td>'+r.name+'</td><td class="num"><b>'+(r.meanTps!=null?r.meanTps:'—')+'</b></td><td class="num">'+(med(rt)!=null?med(rt).toFixed(1):'—')+'</td><td class="num">'+(rt.length?Math.max.apply(null,rt):'—')+'</td><td class="num">'+(rt.length?Math.min.apply(null,rt):'—')+'</td><td class="num">'+fmtPct(d)+'</td><td><span class="bar-in" style="width:'+Math.round(100*(r.meanTps||0)/maxT*0.9)+'%"></span></td><td class="num">'+(r.meanTtft||'—')+'</td><td class="num">'+(r.accept!=null?r.accept+'%':'—')+'</td><td class="num small">'+rt.join(' / ')+'</td></tr>';
+      });
+      html+='</table></div></div>';
+    }
+    if(cs.length){
+      var c1=(j.conc[1]||j.conc[cs[0]]).meanAgg;
+      var peak=cs.map(function(c){return{c:c,agg:j.conc[c].meanAgg}}).reduce(function(a,b){return b.agg>a.agg?b:a});
+      var accs2=cs.map(function(c){return j.conc[c].meanAccept}).filter(function(x){return x!=null});
+      html+='<div class="dSec"><h4>并发档位</h4>';
+      html+=dTiles([[peak.agg,'峰值聚合 tok/s（c='+peak.c+'）'],[c1,'c=1 聚合 tok/s'],[c1?'×'+(peak.agg/c1).toFixed(2):'—','扩展比'],[accs2.length?(accs2.reduce(function(a,b){return a+b},0)/accs2.length).toFixed(1)+'%':'—','平均接受率']]);
+      html+='<div class="dCap">聚合 tok/s（按并发档）</div><div class="chartbox"><canvas id="chD3"></canvas></div>';
+      html+='<table><tr><th>c</th><th>聚合 tok/s</th><th>相对 c1</th><th>接受率</th><th>平均墙钟 s</th><th>各轮</th></tr>';
+      cs.forEach(function(c){var r=j.conc[c];
+        html+='<tr><td>c='+c+'</td><td class="num"><b>'+r.meanAgg+'</b></td><td class="num">'+(c!==1?fmtPct(c1?(r.meanAgg-c1)/c1:null):'基准')+'</td><td class="num">'+(r.meanAccept!=null?r.meanAccept+'%':'—')+'</td><td class="num">'+(r.reps.length?(r.reps.reduce(function(a,b){return a+(b.wall||0)},0)/r.reps.length).toFixed(2):'—')+'</td><td class="num small">'+r.reps.map(function(x){return x.aggTps}).join(' / ')+'</td></tr>';});
+      html+='</table></div>';
+    }
+    if(pks.length){
+      var okKs=pks.filter(function(k){return (j.prefill[k].meanPtps||0)>0});
+      var badKs=pks.filter(function(k){return j.prefill[k].error});
+      var bestK=okKs[0];okKs.forEach(function(k){if((j.prefill[k].meanPtps||0)>(j.prefill[bestK].meanPtps||0))bestK=k});
+      html+='<div class="dSec"><h4>预填充 · TTFT 法</h4>';
+      if(bestK!=null){
+        html+=dTiles([[j.prefill[bestK].meanPtps,'峰值 tok/s（~'+fmtK(bestK)+'）'],[fmtTtft(j.prefill[bestK].meanTtft),'峰值档 TTFT'],[okKs.length,'长度档数'],[(j.summary&&j.summary.prefixHit!=null)?j.summary.prefixHit+'%':'—','前缀缓存命中']]);
+      } else {
+        html+=dTiles([['—','峰值 tok/s（无成功档位）'],['—','峰值档 TTFT'],[0,'长度档数'],[(j.summary&&j.summary.prefixHit!=null)?j.summary.prefixHit+'%':'—','前缀缓存命中']]);
+      }
+      html+='<div class="dCap">prefill tok/s（按上下文长度）</div><div class="chartbox"><canvas id="chD4"></canvas></div>';
+      html+='<table><tr><th>长度</th><th>实际 prompt tok</th><th>TTFT</th><th>prefill tok/s</th><th>各轮 tok/s</th></tr>';
+      pks.forEach(function(k){var r=j.prefill[k];
+        if(r.error){html+='<tr><td>'+fmtK(k)+'</td><td colspan="4" style="text-align:left" class="pfErr small">✖ '+esc(r.error)+'</td></tr>';return;}
+        html+='<tr><td>'+fmtK(k)+'</td><td class="num">'+(r.meanPromptTokens||'—')+'</td><td class="num">'+(r.meanTtft?fmtTtft(r.meanTtft):'—')+'</td><td class="num"><b>'+(r.meanPtps||'—')+'</b></td><td class="num small">'+r.reps.map(function(x){return x.ptps||'—'}).join(' / ')+'</td></tr>';});
+      html+='</table>';
+      if(badKs.length)html+='<div class="small pfErr" style="margin-top:6px">✖ '+badKs.length+' 个档位失败：'+badKs.map(function(k){return '~'+fmtK(k)}).join(' / ')+'（多为超出引擎 max_model_len 或 KV 池放不下）</div>';
+      html+='</div>';
+    }
+    html+=envSectionHtml(j.env); // 09-29 配置快照（vLLM/模型配置，测试开始时采集）
+    if(j.events&&j.events.length){
+      html+='<div class="dSec"><h4>分段总结（'+j.events.length+' 条）</h4><div style="max-height:240px;overflow:auto;border:1px solid var(--bd);border-radius:9px;background:var(--panel2)">';
+      j.events.slice().reverse().forEach(function(e){html+='<div class="ev '+e.kind+'"><span class="tm">'+(e.ts||'')+'</span><span class="tt">'+e.title+'</span><span class="tx">'+(e.text||'')+'</span></div>'});
+      html+='</div></div>';
+    }
+    if(!rows.length&&!cs.length&&!pks.length)html='<div class="small">该记录没有可显示的数据</div>';
+    document.getElementById('detailBody').innerHTML=html;
+    document.getElementById('detailMask').style.display='block';
+    if(window.Chart){
+      if(rows.length){
+        var srt2=rows.slice().sort(function(a,b){return(a.meanTps||0)-(b.meanTps||0)});
+        if(chartD1)chartD1.destroy();
+        chartD1=new Chart(document.getElementById('chD1'),{type:'bar',
+          data:{labels:srt2.map(function(r){return r.name}),datasets:[{label:'tok/s',data:srt2.map(function(r){return r.meanTps||0}),backgroundColor:'rgba(99,102,241,.75)',borderRadius:4}]},
+          options:Object.assign({},CHOPT,{indexAxis:'y',scales:{x:{grid:{color:'#e2e8f0'},ticks:{color:'#64748b'}},y:{grid:{display:false},ticks:{color:'#334155',font:{size:11}}}}})});
+        if(chartD2)chartD2.destroy();
+        chartD2=new Chart(document.getElementById('chD2'),{type:'bar',
+          data:{labels:srt2.map(function(r){return r.name}),datasets:[{label:'TTFT ms',data:srt2.map(function(r){return r.meanTtft||0}),backgroundColor:'rgba(245,158,11,.7)',borderRadius:4}]},
+          options:Object.assign({},CHOPT,{indexAxis:'y',scales:{x:{grid:{color:'#e2e8f0'},ticks:{color:'#64748b'}},y:{grid:{display:false},ticks:{color:'#334155',font:{size:11}}}}})});
+      }
+      if(cs.length){
+        if(chartD3)chartD3.destroy();
+        chartD3=new Chart(document.getElementById('chD3'),{type:'bar',
+          data:{labels:cs.map(function(c){return 'c='+c}),datasets:[{label:'聚合 tok/s',data:cs.map(function(c){return j.conc[c].meanAgg||0}),backgroundColor:'rgba(139,92,246,.7)',borderRadius:4}]},
+          options:Object.assign({},CHOPT,{scales:{y:{grid:{color:'#e2e8f0'},ticks:{color:'#64748b'}},x:{grid:{display:false},ticks:{color:'#334155'}}}})});
+      }
+      if(pks.length){
+        if(chartD4)chartD4.destroy();
+        chartD4=new Chart(document.getElementById('chD4'),{type:'line',
+          data:{labels:pks.map(function(k){return fmtK(k)}),datasets:[{label:'prefill tok/s',data:pks.map(function(k){return j.prefill[k].meanPtps||0}),borderColor:'#8b5cf6',backgroundColor:'rgba(139,92,246,.1)',fill:true,tension:.3,pointRadius:5}]},
+          options:Object.assign({},CHOPT,{scales:{y:{grid:{color:'#e2e8f0'},ticks:{color:'#64748b'}},x:{grid:{display:false},ticks:{color:'#334155'}}}})});
+      }
+    }
+  });
+}
+function closeDetail(){document.getElementById('detailMask').style.display='none'}
+document.getElementById('detailMask').addEventListener('click',function(e){if(e.target===this)closeDetail()});
+document.getElementById('detailClose').addEventListener('click',closeDetail);
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closeDetail()});
+// live metrics
+function loadLive(){
+  if(!selSvc)return;
+  fetch('/v1/internal/bench/metrics?sid='+encodeURIComponent(selSvc.id)).then(r=>r.json()).then(function(m){
+    document.getElementById('live').innerHTML='前缀缓存命中：<b>'+(m.prefixHit!=null?m.prefixHit+'%':'—')+'</b><br>投机接受率：<b>'+(m.accept!=null?m.accept+'%':'—')+'</b>';
+  });
+}
+loadSvcs();loadLive();setInterval(loadLive,5000);poll();
+</script></body></html>

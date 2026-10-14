@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# gpu-ctl — CMP 170HX 运行时 GPU 功耗/频率控制台（单文件，vLLM 管理台「硬件监视」页调用）
+#
+# 能力（全部走 nvidia-smi 运行时软控制；功耗上限可联动开机持久化，频率锁重启自动解除）：
+#   status --json          聚合两卡 功耗限值/区间/默认值 + SM/显存频率 + 限频原因位
+#   pl <瓦> [卡号|all]     设功耗上限（区间由驱动上报，本机 100–300W）
+#   lock <min> <max> [卡]  锁图形频率（nvidia-smi -lgc，MHz）
+#   unlock [卡]            解除频率锁（nvidia-smi -rgc）
+#   persist-pl <瓦>        写开机持久化 drop-in（gpu-power-limit.service 的 Environment=PL）
+#                          + daemon-reload。09-26 铁律：只 -pl 不改 PL，重启必被打回。
+#
+# 设计约束（09-20 铁律）：
+#   · 所有 nvidia-smi 调用一律 `timeout 8` 包裹——驱动异常时 nvidia-smi 会进 D 状态，
+#     调用方的超时杀不掉它；本脚本由 server.js 以 execFile+timeout 调用，
+#     即便被放弃，D 状态进程也不会阻塞 Node 主线程（异步）。
+#   · 非 root 时 exec sudo "$0" 自提权（sudoers 只放行本固定路径，见
+#     ops/install-gpu-ctl-127.sh）。
+#   · 参数严格白名单校验：数字/卡号不合规直接退出，杜绝注入。
+#   · persist-pl 只写固定路径 /etc/systemd/system/gpu-power-limit.service.d/pl-console.conf，
+#     内容只有注释与 Environment=PL=<整数>，并把同目录其它 pl-*.conf 改名停用（防互相覆盖）。
+#
+# 撤销：sudo rm -f /etc/sudoers.d/ll-gpu-ctl && sudo rm -f /usr/local/bin/gpu-ctl
+#       （开机持久化另行：sudo rm -f /etc/systemd/system/gpu-power-limit.service.d/pl-console.conf && sudo systemctl daemon-reload）
+set -uo pipefail
+
+NVS="timeout 8 nvidia-smi"
+PL_DROPIN_DIR=/etc/systemd/system/gpu-power-limit.service.d
+PL_DROPIN=$PL_DROPIN_DIR/pl-console.conf
+
+[[ $EUID -ne 0 ]] && exec sudo "$0" "$@"
+
+die() { echo "错误: $*" >&2; exit 2; }
+
+# 卡号校验：all 或 0-7 单个数字
+chk_gpu() {
+  case "$1" in
+    all|0|1|2|3|4|5|6|7) return 0 ;;
+    *) die "非法卡号 '$1'（允许 all 或 0-7）" ;;
+  esac
+}
+# 整数频率校验：100-4000 MHz
+chk_mhz() {
+  [[ "$1" =~ ^[0-9]{3,4}$ ]] || die "非法频率 '$1'（需 100-4000 的整数 MHz）"
+  (( $1 >= 100 && $1 <= 4000 )) || die "频率 $1 超出合理范围 100-4000 MHz"
+}
+# 功耗校验：50-500 W（真实可设区间再按驱动上报收窄，在 status 里给前端）
+chk_watt() {
+  [[ "$1" =~ ^[0-9]{2,3}$ ]] || die "非法功耗 '$1'（需 50-500 的整数瓦）"
+  (( $1 >= 50 && $1 <= 500 )) || die "功耗 $1 超出合理范围 50-500 W"
+}
+
+do_status_json() {
+  # 一次查询全部数值字段（nounits 便于直接当数字用）
+  local csv
+  csv=$($NVS --query-gpu=index,name,power.limit,power.draw,power.min_limit,power.max_limit,power.default_limit,clocks.sm,clocks.max.sm,clocks.mem,clocks.max.mem,temperature.gpu,clocks_event_reasons.active,pstate \
+        --format=csv,noheader,nounits 2>/dev/null) || { echo '{"supported":false,"error":"nvidia-smi 查询失败（驱动异常或超时）"}'; return 1; }
+  [[ -n "$csv" ]] || { echo '{"supported":false,"error":"nvidia-smi 无输出"}'; return 1; }
+  echo "$csv" | python3 -c '
+import sys, json
+gpus = []
+for line in sys.stdin:
+    line = line.strip()
+    if not line: continue
+    f = [x.strip() for x in line.split(",")]
+    if len(f) < 14: continue
+    def num(i):
+        try: return float(f[i])
+        except (ValueError, IndexError): return None
+    def inum(i):
+        v = num(i)
+        return int(v) if v is not None else None
+    try: reason = int(f[12], 16)
+    except ValueError: reason = None
+    gpus.append({
+        "index": inum(0), "name": f[1],
+        "power_limit": num(2), "power_draw": num(3),
+        "power_min_limit": num(4), "power_max_limit": num(5), "power_default_limit": num(6),
+        "sm_clock": inum(7), "sm_clock_max": inum(8),
+        "mem_clock": inum(9), "mem_clock_max": inum(10),
+        "temp": inum(11), "pstate": f[13],
+        # 限频原因位（0x2=Applications Clocks 锁 / 0x4=SW Power Cap / 0x8=HW Slowdown）
+        "event_bits": ("0x%x" % reason) if reason is not None else None,
+        "sw_power_cap": (reason & 0x4) != 0 if reason is not None else None,
+        "hw_slowdown": (reason & 0x8) != 0 if reason is not None else None,
+        "app_clocks": (reason & 0x2) != 0 if reason is not None else None,
+    })
+print(json.dumps({"supported": len(gpus) > 0, "gpus": gpus}, ensure_ascii=False))
+'
+}
+
+# 目标卡展开：all → 实际存在的卡号列表（nvidia-smi -i 不吃 "all" 字面量，
+# 传了会"No devices found"，且退出码仍 0——必须自己展开）
+targets() {
+  local g="$1"
+  if [[ "$g" = "all" ]]; then
+    $NVS --query-gpu=index --format=csv,noheader 2>/dev/null | tr -d ' ' | paste -sd, -
+  else
+    echo "$g"
+  fi
+}
+
+case "${1:-}" in
+  status)
+    shift
+    [[ "${1:-}" = "--json" ]] || die "status 需要 --json 参数"
+    do_status_json
+    ;;
+  pl)
+    [[ $# -ge 2 ]] || die "用法: gpu-ctl pl <瓦> [卡号|all]"
+    chk_watt "$2"
+    g="${3:-all}"; chk_gpu "$g"
+    tgt="$(targets "$g")"; [[ -n "$tgt" ]] || die "无可寻址 GPU"
+    $NVS -pl "$2" -i "$tgt" 2>&1 || die "设置功耗上限 $2W 失败（卡 $g）"
+    echo "已设置功耗上限 ${2}W（卡 $tgt）"
+    ;;
+  lock)
+    [[ $# -ge 3 ]] || die "用法: gpu-ctl lock <minMHz> <maxMHz> [卡号|all]"
+    chk_mhz "$2"; chk_mhz "$3"
+    (( $2 <= $3 )) || die "min($2) 不能大于 max($3)"
+    g="${4:-all}"; chk_gpu "$g"
+    tgt="$(targets "$g")"; [[ -n "$tgt" ]] || die "无可寻址 GPU"
+    $NVS -lgc "$2,$3" -i "$tgt" 2>&1 || die "锁频 $2-$3MHz 失败（卡 $g）"
+    echo "已锁定图形频率 ${2}-${3}MHz（卡 $tgt）"
+    ;;
+  unlock)
+    g="${2:-all}"; chk_gpu "$g"
+    tgt="$(targets "$g")"; [[ -n "$tgt" ]] || die "无可寻址 GPU"
+    $NVS -rgc -i "$tgt" 2>&1 || die "解除频率锁失败（卡 $g）"
+    echo "已解除频率锁（卡 $tgt）"
+    ;;
+  persist-pl)
+    [[ $# -ge 2 ]] || die "用法: gpu-ctl persist-pl <瓦>"
+    chk_watt "$2"
+    mkdir -p "$PL_DROPIN_DIR" || die "无法创建 $PL_DROPIN_DIR"
+    # 同目录其它控制台风格 drop-in 停用（防多个 Environment=PL 互相覆盖语义混乱）
+    for f in "$PL_DROPIN_DIR"/pl-[0-9]*.conf; do
+      [[ -e "$f" && "$f" != "$PL_DROPIN" ]] && mv "$f" "$f.disabled-console" 2>/dev/null
+    done
+    {
+      echo '[Service]'
+      echo '# 由 vLLM 控制台写入（gpu-ctl persist-pl），保持控制台功耗设置跨重启生效'
+      echo "Environment=PL=$2"
+    } > "$PL_DROPIN" || die "写入 $PL_DROPIN 失败"
+    systemctl daemon-reload 2>/dev/null || die "drop-in 已写入，但 systemctl daemon-reload 失败"
+    echo "开机持久化 PL=$2 已写入 $(basename "$PL_DROPIN")"
+    ;;
+  halt)
+    # GPU 高温自动关机守护（[gpu-hotshield 1009]）的执行末端：先 sync 把脏页落盘
+    # （保护模型权重/日志/追踪文件不被突然断电毁掉），再 systemctl poweroff 正常关机。
+    # 刻意不走 nvidia-smi：驱动 D 状态时 $NVS 通道会挂死，本命令仍能执行。
+    # 不可逆操作：倒计时、取消、冷却判定全部在调用方（server.js hotshield 模块）完成。
+    { date '+%F %T'; echo "GPU 高温保护关机（gpu-hotshield，由 vLLM 控制台发起）"; } > /run/gpu-hotshield-halt.reason 2>/dev/null
+    sync &
+    SYNC_PID=$!
+    # sync 最长等 8s：存储栈卡住时也要保障关机时效
+    ( sleep 8; kill "$SYNC_PID" 2>/dev/null ) &
+    WAITER=$!
+    wait "$SYNC_PID" 2>/dev/null
+    kill "$WAITER" 2>/dev/null
+    echo "已下发关机（sync 完成，systemctl poweroff）"
+    exec systemctl poweroff
+    ;;
+  help|"")
+    cat <<'EOH'
+用法: gpu-ctl <命令>
+  status --json          输出两卡功耗/频率/限频原因（JSON）
+  pl <瓦> [卡号|all]     设功耗上限（100-300W，重启回落 service 的 PL）
+  lock <min> <max> [卡]  锁图形频率（MHz）
+  unlock [卡]            解除频率锁
+  persist-pl <瓦>        写开机持久化 drop-in（pl-console.conf 的 Environment=PL）
+  halt                   sync 落盘后关机（GPU 高温保护专用，不可逆）
+EOH
+    ;;
+  *)
+    die "未知命令 '$1'（gpu-ctl help 查看全部）"
+    ;;
+esac
